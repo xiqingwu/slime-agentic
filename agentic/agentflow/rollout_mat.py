@@ -30,11 +30,15 @@ from slime.rollout.sglang_rollout import GenerateState
 from slime.utils.types import Sample
 
 from core.llm_engine import SGLangEngine
-from core.mat_solver import MATSolver, baseline_answer
+from core.mat_solver import MATSolver, baseline_answer, single_flight
 
 _OPENCV_TOOL_TIMEOUT = 30
 _DEFAULT_MAX_STEPS = 5
 _DEFAULT_MAX_NEW_TOKENS = 1024  # MAT steps (problem/code/answer) are short; 2048 wasted budget
+
+# In-flight registry so the N identical greedy baselines of one GRPO group collapse
+# to a single computation (R3). Keyed by (question, image_path); cleared per call.
+_baseline_registry: dict = {}
 
 
 def _correction_enabled() -> bool:
@@ -137,7 +141,11 @@ async def generate(args: Any, sample: Sample, sampling_params: dict[str, Any], e
         solve_task = asyncio.ensure_future(solver.solve(question, image_path))
         base_task = (
             asyncio.ensure_future(
-                baseline_answer(engine, question, image_path, sampling_params=_greedy_params(sampling_params))
+                single_flight(
+                    _baseline_registry, (question, image_path),
+                    lambda: baseline_answer(
+                        engine, question, image_path, sampling_params=_greedy_params(sampling_params)),
+                )
             )
             if _correction_enabled() else None
         )

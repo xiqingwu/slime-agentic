@@ -94,6 +94,20 @@ baseline is the *same* definition used by the training correction reward
 (`core.mat_solver.baseline_answer`), so the training signal and the eval metric
 measure the same counterfactual.
 
+## Env knobs (set in the launcher, exported into the Ray runtime)
+
+| Env | Default | Effect |
+|---|---|---|
+| `MAT_MAX_STEPS` | 5 | max online steps per trajectory (problem→code→answer) |
+| `MAT_MAX_NEW_TOKENS` | 1024 | per-turn generation cap (MAT steps are short) |
+| `MAT_CORRECTION_REWARD` | 1 | generate the no-tool baseline + add the correction term |
+| `MAT_CV2_FORKSERVER` | 0 | cv2 exec backend: warm forkserver (1) vs per-call subprocess (0) |
+
+Rollout efficiency: the OpenCV tool is instantiated once and shared; the no-tool
+baseline runs concurrently with the tool loop; and the N identical greedy baselines
+of one GRPO group are collapsed to a single computation via in-flight dedup
+(`core.mat_solver.single_flight`), cleared per call so a later step recomputes fresh.
+
 ## Tests (offline, no GPU)
 
 ```bash
@@ -101,10 +115,11 @@ cd agentic/agentflow
 for t in tests/test_*.py; do python "$t"; done
 ```
 
-89 unit tests cover rewards (incl. correction-targeted), data conversion, the cv2
+93 unit tests cover rewards (incl. correction-targeted), data conversion, the cv2
 tool (real OpenCV) and the forkserver executor, the multimodal engine,
-custom_convert alignment, the online solver loop (incl. a real-cv2 integration),
-the shared no-tool baseline, and eval metrics.
+custom_convert alignment, the online solver loop (incl. real-cv2 integration,
+temp-file cleanup, and baseline single-flight dedup), the shared no-tool baseline,
+and eval metrics.
 
 ## Status
 

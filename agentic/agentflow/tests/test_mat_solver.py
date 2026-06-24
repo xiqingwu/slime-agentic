@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.llm_engine import GenerationOutput  # noqa: E402
 from core.mat_solver import (  # noqa: E402
     MATSolver, build_tip, parse_step, extract_answer,
-    build_baseline_messages, baseline_answer, BASELINE_PROMPT,
+    build_baseline_messages, baseline_answer, BASELINE_PROMPT, single_flight,
     _TIP_CROP, _TIP_NONE,
 )
 
@@ -102,6 +102,57 @@ def test_baseline_answer_extracts_and_passes_params():
     pred = asyncio.run(baseline_answer(engine, "q", "/img.png", sampling_params={"temperature": 0.0}))
     assert pred == "blue car"                      # extracted from <answer>
     assert _img_of(engine.calls[0]) == "/img.png"  # one-shot on the corrupted image
+
+
+# ── single_flight (R3: dedup identical baselines across a GRPO group) ─────────────
+
+def test_single_flight_collapses_concurrent():
+    registry, calls = {}, {"n": 0}
+
+    async def factory():
+        calls["n"] += 1
+        await asyncio.sleep(0.01)   # hold the in-flight window open
+        return "R"
+
+    async def main():
+        return await asyncio.gather(*[single_flight(registry, ("k",), factory) for _ in range(8)])
+
+    results = asyncio.run(main())
+    assert results == ["R"] * 8     # all 8 got the result
+    assert calls["n"] == 1          # ...but it was computed once
+    assert registry == {}           # cleaned up after completion
+
+
+def test_single_flight_recomputes_after_completion():
+    """Sequential (next-step) calls recompute — no stale cross-step caching."""
+    registry, calls = {}, {"n": 0}
+
+    async def factory():
+        calls["n"] += 1
+        return calls["n"]
+
+    async def main():
+        a = await single_flight(registry, "k", factory)
+        b = await single_flight(registry, "k", factory)
+        return a, b
+
+    assert asyncio.run(main()) == (1, 2)
+
+
+def test_single_flight_propagates_exception():
+    registry = {}
+
+    async def boom():
+        raise ValueError("nope")
+
+    async def main():
+        return await asyncio.gather(
+            *[single_flight(registry, "k", boom) for _ in range(3)], return_exceptions=True
+        )
+
+    results = asyncio.run(main())
+    assert all(isinstance(r, ValueError) for r in results)
+    assert registry == {}           # entry removed even on failure
 
 
 # ── full trajectory: problem -> code(success) -> answer ──────────────────────────

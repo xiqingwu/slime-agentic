@@ -21,6 +21,7 @@ helpers (``build_tip``, ``parse_step``, ``extract_answer``) are tested directly.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -130,6 +131,35 @@ async def baseline_answer(engine, question: str, image_path: str, sampling_param
     """
     gen = await engine.generate(build_baseline_messages(question, image_path), sampling_params=sampling_params)
     return extract_answer(gen.response)
+
+
+async def single_flight(registry: dict, key, factory):
+    """Collapse concurrent calls with the same ``key`` onto one in-flight computation.
+
+    The N GRPO samples of one prompt share an identical greedy baseline, so computing
+    it N times is wasted forwards (R3). ``factory`` is a zero-arg coroutine function;
+    callers arriving while it runs await the same future. The registry entry is removed
+    once it completes, so a later training step (different policy) recomputes a fresh
+    baseline rather than serving a stale one.
+
+    asyncio is single-threaded per loop, so the get/create/store below is atomic w.r.t.
+    other coroutines (no await between them).
+    """
+    fut = registry.get(key)
+    if fut is not None:
+        return await fut
+    loop = asyncio.get_event_loop()
+    fut = loop.create_future()
+    registry[key] = fut
+    try:
+        result = await factory()
+        fut.set_result(result)
+        return result
+    except BaseException as exc:  # propagate to every awaiter, then let them re-raise
+        fut.set_exception(exc)
+        raise
+    finally:
+        registry.pop(key, None)
 
 
 def parse_step(response: str):
