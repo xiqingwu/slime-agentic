@@ -10,7 +10,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from prepare_mat_data import convert_benchmark  # noqa: E402
-from core.mat_eval_metrics import score_one, aggregate, call_gain_harm  # noqa: E402
+from core.mat_eval_metrics import (  # noqa: E402
+    score_one, aggregate, aggregate_by_type, call_gain_harm, diagnosis_accuracy,
+)
 
 # Real rows from laolao77/MAT MAT-Benchmark/MAT-Coding.json (abridged question).
 BENCH = [
@@ -89,6 +91,30 @@ def test_aggregate_overall_and_splits():
 def test_aggregate_omits_absent_split():
     agg = aggregate([{"f1": 1.0, "em": 1, "split": "simple"}])
     assert "hard" not in agg and "simple" in agg
+
+
+# ── per-corruption-type breakdown + diagnosis accuracy (eval polish) ─────────────
+
+def test_aggregate_by_type():
+    records = [
+        {"f1": 1.0, "em": 1, "type": "blur"},
+        {"f1": 0.0, "em": 0, "type": "blur"},
+        {"f1": 1.0, "em": 1, "type": "rotation90+dark"},
+        {"f1": 0.5, "em": 0, "type": None},        # missing type -> excluded
+    ]
+    by_type = aggregate_by_type(records)
+    assert set(by_type) == {"blur", "rotation90+dark"}
+    assert by_type["blur"] == {"f1": 0.5, "em": 0.5, "n": 2}
+    assert by_type["rotation90+dark"]["em"] == 1.0
+
+
+def test_diagnosis_accuracy():
+    records = [
+        {"diagnosis_correct": True}, {"diagnosis_correct": False},
+        {"diagnosis_correct": True}, {},   # missing -> excluded
+    ]
+    assert abs(diagnosis_accuracy(records) - 2 / 3) < 1e-9
+    assert diagnosis_accuracy([]) == 0.0
 
 
 # ── Call Gain / Call Harm ────────────────────────────────────────────────────────

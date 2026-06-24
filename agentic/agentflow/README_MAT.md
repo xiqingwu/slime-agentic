@@ -95,6 +95,13 @@ baseline is the *same* definition used by the training correction reward
 (`core.mat_solver.baseline_answer`), so the training signal and the eval metric
 measure the same counterfactual.
 
+The report (console + `mat_eval_results.json` summary) includes:
+- **F1/EM** overall and by split (simple/hard), and **by corruption type**
+  (`tool_by_type`) — which corruptions the tool actually helps with;
+- **mechanism stats** — diagnosis accuracy, tool-call rate, code-exec success rate,
+  avg steps — the selective-tool-use evidence;
+- **Call Gain/Harm** overall and **per corruption type** (`--baseline`).
+
 ## Env knobs (set in the launcher, exported into the Ray runtime)
 
 | Env | Default | Effect |
@@ -124,11 +131,12 @@ cd agentic/agentflow
 for t in tests/test_*.py; do python "$t"; done
 ```
 
-99 unit tests cover rewards (incl. correction-targeted, env weights, logging
+101 unit tests cover rewards (incl. correction-targeted, env weights, logging
 helpers), data conversion, the cv2 tool (real OpenCV) and the forkserver executor,
 the shared tool loader, the multimodal engine, custom_convert alignment, the online
 solver loop (incl. real-cv2 integration, temp-file cleanup, tool-timeout passthrough,
-and baseline single-flight dedup), the shared no-tool baseline, and eval metrics.
+and baseline single-flight dedup), the shared no-tool baseline, and eval metrics
+(F1/EM by split & corruption type, diagnosis accuracy, Call Gain/Harm).
 
 ## Status
 

@@ -28,15 +28,16 @@ def score_one(pred: str, answers) -> dict:
     return {"f1": f1, "em": int(em)}
 
 
+def _mean(items, key):
+    return sum(it[key] for it in items) / len(items) if items else 0.0
+
+
 def aggregate(records: list[dict]) -> dict:
     """Aggregate per-item {f1, em, split} into overall + per-split means.
 
     Returns {"overall": {...}, "simple": {...}, "hard": {...}} where each block is
     {"f1": mean, "em": mean, "n": count}. Splits with no items are omitted.
     """
-    def _mean(items, key):
-        return sum(it[key] for it in items) / len(items) if items else 0.0
-
     result = {
         "overall": {"f1": _mean(records, "f1"), "em": _mean(records, "em"), "n": len(records)},
     }
@@ -45,6 +46,29 @@ def aggregate(records: list[dict]) -> dict:
         if sub:
             result[split] = {"f1": _mean(sub, "f1"), "em": _mean(sub, "em"), "n": len(sub)}
     return result
+
+
+def aggregate_by_type(records: list[dict]) -> dict:
+    """F1/EM grouped by corruption type (records carry a ``type`` string key).
+
+    Shows *which* corruptions the tool helps with — the per-type story behind the
+    overall number. Types with no items are omitted.
+    """
+    out = {}
+    for t in sorted({r.get("type") for r in records if r.get("type") is not None}):
+        sub = [r for r in records if r.get("type") == t]
+        out[t] = {"f1": _mean(sub, "f1"), "em": _mean(sub, "em"), "n": len(sub)}
+    return out
+
+
+def diagnosis_accuracy(records: list[dict]) -> float:
+    """Fraction of items whose <problem> step correctly named the corruption.
+
+    Records carry a bool ``diagnosis_correct`` (set by the eval runner from the
+    solver's first problem step vs the known corruption label).
+    """
+    flags = [bool(r["diagnosis_correct"]) for r in records if "diagnosis_correct" in r]
+    return sum(flags) / len(flags) if flags else 0.0
 
 
 def call_gain_harm(pairs: list[tuple[bool, bool]]) -> dict:

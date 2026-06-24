@@ -38,7 +38,10 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 from core.llm_engine import SGLangEngine, messages_have_images  # noqa: E402
 from core.mat_solver import MATSolver, SYSTEM_PROMPT_AGENT_CODE, baseline_answer  # noqa: E402
-from core.mat_eval_metrics import score_one, aggregate, call_gain_harm  # noqa: E402
+from core.mat_eval_metrics import (  # noqa: E402
+    score_one, aggregate, aggregate_by_type, call_gain_harm, diagnosis_accuracy,
+)
+from core.mat_rewards import diagnosis_reward, mechanism_means  # noqa: E402
 from core.tool_loader import load_opencv_tool, tool_timeout_from_env  # noqa: E402
 import slime.utils.http_utils as _http_utils  # noqa: E402
 
@@ -74,6 +77,7 @@ def load_benchmark(path: str) -> list[dict]:
                 "answers": meta.get("answers") or ([obj["gt"]] if obj.get("gt") else []),
                 "split": meta.get("split"),
                 "id": meta.get("id"),
+                "corruption_gt": meta.get("corruption_gt") or [],   # for type breakdown + diagnosis
             })
     return items
 
@@ -86,18 +90,36 @@ def _extract_answer(text: str) -> str:
 async def _eval_one(engine, tool, item, max_steps, sem, idx, total, run_baseline):
     async with sem:
         question, image_path, answers = item["question"], item["image_path"], item["answers"]
-        rec = {"id": item.get("id"), "split": item.get("split"), "question": question[:80]}
+        corruption_gt = item.get("corruption_gt") or []
+        type_key = "+".join(corruption_gt) if corruption_gt else "unknown"
+        rec = {"id": item.get("id"), "split": item.get("split"), "type": type_key,
+               "question": question[:80]}
 
         # tool run
+        planner_steps, code_exec_oks = [], []
         try:
             solver = MATSolver(engine, tool, max_steps=max_steps, tool_timeout=tool_timeout_from_env())
             out = await solver.solve(question, image_path)
             tool_pred = _extract_answer(out.final_output or "")
+            planner_steps = out.planner_steps or []
+            code_exec_oks = out.code_exec_oks or []
         except Exception as exc:  # noqa: BLE001
             logger.warning("[%d/%d] solver error: %s", idx + 1, total, exc)
             tool_pred = ""
         s = score_one(tool_pred, answers)
         rec.update({"pred": tool_pred, "f1": s["f1"], "em": s["em"]})
+
+        # mechanism signals (selective-tool-use story)
+        problem_steps = [st for st in planner_steps if st.get("type") == "problem"]
+        diag_correct = bool(problem_steps) and (
+            diagnosis_reward(problem_steps[0].get("content", ""), corruption_gt) == 1.0
+        )
+        rec.update({
+            "diagnosis_correct": diag_correct,
+            "n_steps": len(planner_steps),
+            "code_exec_oks": code_exec_oks,
+            "tool_called": bool(code_exec_oks),
+        })
 
         # optional no-tool baseline (shared definition with training A4 — B5)
         if run_baseline:
@@ -167,13 +189,29 @@ def main():
     ))
     elapsed = time.time() - t0
 
-    summary = {"tool": aggregate(records), "elapsed_seconds": round(elapsed, 2)}
+    # mechanism stats: avg steps / tool-call rate / code-exec success + diagnosis acc
+    metas = [{"planner_steps": [None] * r.get("n_steps", 0), "code_exec_oks": r.get("code_exec_oks") or []}
+             for r in records]
+    mechanism = {**mechanism_means(metas), "diagnosis_accuracy": diagnosis_accuracy(records)}
+
+    summary = {
+        "tool": aggregate(records),
+        "tool_by_type": aggregate_by_type(records),
+        "mechanism": mechanism,
+        "elapsed_seconds": round(elapsed, 2),
+    }
     if args.baseline:
         base_records = [{"f1": r.get("baseline_f1", 0.0), "em": r.get("baseline_em", 0), "split": r["split"]}
                         for r in records]
         summary["baseline"] = aggregate(base_records)
         pairs = [(bool(r.get("baseline_em")), bool(r.get("em"))) for r in records]
         summary["call_gain_harm"] = call_gain_harm(pairs)
+        # per-type gain/harm: does the tool selectively help some corruptions, hurt others?
+        summary["call_gain_harm_by_type"] = {
+            t: call_gain_harm([(bool(r.get("baseline_em")), bool(r.get("em")))
+                               for r in records if r.get("type") == t])
+            for t in sorted({r.get("type") for r in records})
+        }
 
     out = {"summary": summary, "details": records}
     Path(args.output).write_text(json.dumps(out, indent=2, ensure_ascii=False))
@@ -183,7 +221,17 @@ def main():
     print("\n" + "=" * 60)
     for split, blk in summary["tool"].items():
         print(f"  tool/{split:8s}  EM={blk['em']:.3f}  F1={blk['f1']:.3f}  (n={blk['n']})")
+    print("  " + "-" * 56)
+    for t, blk in summary["tool_by_type"].items():
+        print(f"  type/{t:14s}  EM={blk['em']:.3f}  F1={blk['f1']:.3f}  (n={blk['n']})")
+    m = summary["mechanism"]
+    print("  " + "-" * 56)
+    print(f"  mechanism: diag_acc={m.get('diagnosis_accuracy', 0):.3f}  "
+          f"tool_call_rate={m.get('tool_call_rate', 0):.3f}  "
+          f"code_exec_ok={m.get('code_exec_success_rate', 0):.3f}  "
+          f"avg_steps={m.get('avg_steps', 0):.2f}")
     if args.baseline:
+        print("  " + "-" * 56)
         for split, blk in summary["baseline"].items():
             print(f"  base/{split:8s}  EM={blk['em']:.3f}  F1={blk['f1']:.3f}  (n={blk['n']})")
         g = summary["call_gain_harm"]
