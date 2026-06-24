@@ -110,7 +110,11 @@ async def generate(args: Any, sample: Sample, sampling_params: dict[str, Any], e
 
     state = GenerateState(args)
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
-    engine = SGLangEngine(url=url, tokenizer=state.tokenizer, sampling_params=sampling_params, max_new_tokens=4096, enable_thinking=False)
+    # processor is None for text-only models (backward compatible); for VLMs it
+    # enables the multimodal path so image-bearing turns send image_data + return
+    # multimodal_train_inputs (plan M2 / §5.2).
+    processor = getattr(state, "processor", None)
+    engine = SGLangEngine(url=url, tokenizer=state.tokenizer, sampling_params=sampling_params, max_new_tokens=4096, enable_thinking=False, processor=processor)
 
     question = sample.prompt if isinstance(sample.prompt, str) else sample.prompt[-1]["content"]
 
@@ -124,6 +128,7 @@ async def generate(args: Any, sample: Sample, sampling_params: dict[str, Any], e
         tokenizer=state.tokenizer,
         sampling_params=sampling_params,
         max_new_tokens=4096,
+        processor=processor,
     )
 
     coder_engine = SGLangEngine(
@@ -131,6 +136,7 @@ async def generate(args: Any, sample: Sample, sampling_params: dict[str, Any], e
         tokenizer=state.tokenizer,
         sampling_params=sampling_params,
         max_new_tokens=4096,
+        processor=processor,
     )
     try:
         engine_map = {

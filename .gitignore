@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# AgentFlow / MAT runtime artifacts (generated during rollout/eval)
+agentic/agentflow/trajectories/
+agentic/agentflow/eval_scores.json
+agentic/agentflow/**/mat_step_*
+mat_eval_results.json

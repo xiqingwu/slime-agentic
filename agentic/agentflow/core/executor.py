@@ -17,12 +17,17 @@ TOOL_NAME_MAPPING_LONG = {
         "class_name": "Python_Coder_Tool",
         "dir_name": "python_coder"
     },
+    "OpenCV_Image_Editor_Tool": {
+        "class_name": "OpenCV_Editor_Tool",
+        "dir_name": "opencv_editor"
+    },
 }
 
 # Short to long mapping for fallback
 TOOL_NAME_MAPPING_SHORT = {
     "Base_Generator_Tool": "Generalist_Solution_Generator_Tool",
     "Python_Coder_Tool": "Python_Code_Generator_Tool",
+    "OpenCV_Editor_Tool": "OpenCV_Image_Editor_Tool",
 }
 
 class Executor:

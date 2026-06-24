@@ -52,6 +52,11 @@ def custom_convert(args, samples):
     sample_indices = []
     rollout_log_probs_list = []
     has_rollout_log_probs = False
+    # Per-sequence multimodal tensors (pixel_values, image_grid_thw, ...). Must stay
+    # aligned 1:1 with tokens_list through turn-expansion and trimming (plan §7.4).
+    # None for text-only sequences; the training backend skips None entries.
+    multimodal_list = []
+    has_multimodal = False
 
     for i, sample in enumerate(samples):
         meta = sample.train_metadata
@@ -69,6 +74,10 @@ def custom_convert(args, samples):
             if sample.rollout_log_probs is not None:
                 rollout_log_probs_list.append(sample.rollout_log_probs)
                 has_rollout_log_probs = True
+            mm = getattr(sample, "multimodal_train_inputs", None)
+            multimodal_list.append(mm)
+            if mm is not None:
+                has_multimodal = True
             continue
 
         turns = meta["turns"]
@@ -91,6 +100,12 @@ def custom_convert(args, samples):
             if turn.get("rollout_log_probs"):
                 rollout_log_probs_list.append(turn["rollout_log_probs"])
                 has_rollout_log_probs = True
+            # Each turn carries the image(s) it actually used (e.g. the processed
+            # image fed back into that turn). None when the turn had no image.
+            mm = turn.get("multimodal_train_inputs")
+            multimodal_list.append(mm)
+            if mm is not None:
+                has_multimodal = True
 
     # ── 3. Trim to global_batch_size multiple ──
     # After turn expansion the sample count is no longer guaranteed to be
@@ -117,6 +132,7 @@ def custom_convert(args, samples):
         sample_indices = sample_indices[:trim_to]
         if has_rollout_log_probs:
             rollout_log_probs_list = rollout_log_probs_list[:trim_to]
+        multimodal_list = multimodal_list[:trim_to]
 
     train_data = {
         "tokens": tokens_list,
@@ -129,5 +145,8 @@ def custom_convert(args, samples):
     }
     if has_rollout_log_probs:
         train_data["rollout_log_probs"] = rollout_log_probs_list
+    # Mirror slime's default convert: only emit when at least one sequence has images.
+    if has_multimodal:
+        train_data["multimodal_train_inputs"] = multimodal_list
 
     return train_data
