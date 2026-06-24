@@ -53,7 +53,7 @@ class FakeTool:
         self.calls = []
 
     async def execute(self, code, input_image_path, output_image_path=None, timeout=30):
-        self.calls.append({"code": code, "in": input_image_path, "out": output_image_path})
+        self.calls.append({"code": code, "in": input_image_path, "out": output_image_path, "timeout": timeout})
         return self.results.pop(0)
 
 
@@ -202,6 +202,13 @@ def test_code_failure_keeps_image():
     assert out.code_exec_oks == [False]
     # answer turn still sees the original corrupted image (no successful update)
     assert _img_of(engine.calls[2]) == "/corrupted.png"
+
+
+def test_tool_timeout_passed_through():
+    engine = FakeEngine([PROBLEM, CODE, ANSWER])
+    tool = FakeTool([{"success": True, "output_image_path": "/p.png"}])
+    asyncio.run(MATSolver(engine, tool, tool_timeout=7).solve("q", "/corrupted.png"))
+    assert tool.calls[0]["timeout"] == 7   # configurable timeout reaches the tool
 
 
 # ── no-op code: ran but changed nothing -> code_exec_ok is False ─────────────────

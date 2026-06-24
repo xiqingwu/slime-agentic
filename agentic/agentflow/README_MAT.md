@@ -44,6 +44,7 @@ corrupted image + question
 | `core/mat_rewards.py` | path-independent rewards (format/diagnosis/code-exec/outcome/correction) + `mat_reward_func` |
 | `core/image_tool.py` + `tools/opencv_editor/` | OpenCV code execution (extract→path-rewrite→**resource-limited subprocess**→verify); not a true sandbox — see module docstring |
 | `core/image_worker.py` | optional warm forkserver executor (`MAT_CV2_FORKSERVER=1`) — avoids re-importing cv2 per code step |
+| `core/tool_loader.py` | shared cached OpenCV-tool factory + timeout config (used by both rollout & eval) |
 | `core/llm_engine.py` | SGLang engine with multimodal path (sends `image_data`, returns `multimodal_train_inputs`) |
 | `core/mat_solver.py` | online MAT loop (`MATSolver`) + protocol prompt/tips |
 | `custom_convert.py` | turn-split + multimodal_train_inputs alignment |
@@ -102,6 +103,7 @@ measure the same counterfactual.
 | `MAT_MAX_NEW_TOKENS` | 1024 | per-turn generation cap (MAT steps are short) |
 | `MAT_CORRECTION_REWARD` | 1 | generate the no-tool baseline + add the correction term |
 | `MAT_CV2_FORKSERVER` | 0 | cv2 exec backend: warm forkserver (1) vs per-call subprocess (0) |
+| `MAT_TOOL_TIMEOUT` | 30 | per-cv2-exec timeout (seconds) |
 | `MAT_W_OUTCOME` / `MAT_W_FORMAT` / `MAT_W_DIAGNOSIS` / `MAT_W_CODE_EXEC` / `MAT_W_CORRECTION` | see `DEFAULT_WEIGHTS` | override individual reward-component weights without editing code |
 
 Reward visibility: `rollout_mat.log_rollout` (wired via
@@ -122,11 +124,11 @@ cd agentic/agentflow
 for t in tests/test_*.py; do python "$t"; done
 ```
 
-93 unit tests cover rewards (incl. correction-targeted), data conversion, the cv2
-tool (real OpenCV) and the forkserver executor, the multimodal engine,
-custom_convert alignment, the online solver loop (incl. real-cv2 integration,
-temp-file cleanup, and baseline single-flight dedup), the shared no-tool baseline,
-and eval metrics.
+99 unit tests cover rewards (incl. correction-targeted, env weights, logging
+helpers), data conversion, the cv2 tool (real OpenCV) and the forkserver executor,
+the shared tool loader, the multimodal engine, custom_convert alignment, the online
+solver loop (incl. real-cv2 integration, temp-file cleanup, tool-timeout passthrough,
+and baseline single-flight dedup), the shared no-tool baseline, and eval metrics.
 
 ## Status
 

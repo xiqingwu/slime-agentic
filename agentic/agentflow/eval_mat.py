@@ -39,6 +39,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 from core.llm_engine import SGLangEngine, messages_have_images  # noqa: E402
 from core.mat_solver import MATSolver, SYSTEM_PROMPT_AGENT_CODE, baseline_answer  # noqa: E402
 from core.mat_eval_metrics import score_one, aggregate, call_gain_harm  # noqa: E402
+from core.tool_loader import load_opencv_tool, tool_timeout_from_env  # noqa: E402
 import slime.utils.http_utils as _http_utils  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
@@ -51,15 +52,6 @@ def _init_http_client(concurrency: int = 256) -> None:
             limits=httpx.Limits(max_connections=concurrency),
             timeout=httpx.Timeout(None),
         )
-
-
-def _load_opencv_tool():
-    import importlib.util
-    tool_file = _SCRIPT_DIR / "tools" / "opencv_editor" / "tool.py"
-    spec = importlib.util.spec_from_file_location("_tool_opencv_editor", tool_file)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.OpenCV_Editor_Tool()
 
 
 def load_benchmark(path: str) -> list[dict]:
@@ -98,7 +90,7 @@ async def _eval_one(engine, tool, item, max_steps, sem, idx, total, run_baseline
 
         # tool run
         try:
-            solver = MATSolver(engine, tool, max_steps=max_steps)
+            solver = MATSolver(engine, tool, max_steps=max_steps, tool_timeout=tool_timeout_from_env())
             out = await solver.solve(question, image_path)
             tool_pred = _extract_answer(out.final_output or "")
         except Exception as exc:  # noqa: BLE001
@@ -127,7 +119,7 @@ async def run_eval(items, url, tokenizer, processor, sampling_params, concurrenc
         url=url, tokenizer=tokenizer, processor=processor,
         sampling_params=sampling_params, max_new_tokens=sampling_params.get("max_new_tokens", 2048),
     )
-    tool = _load_opencv_tool()
+    tool = load_opencv_tool()
     sem = asyncio.Semaphore(concurrency)
     total = len(items)
     tasks = [_eval_one(engine, tool, it, max_steps, sem, i, total, run_baseline) for i, it in enumerate(items)]

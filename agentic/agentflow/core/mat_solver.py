@@ -194,12 +194,13 @@ def _user_image_message(image_path: str, text: str) -> list[dict]:
 
 class MATSolver:
     def __init__(self, engine, tool, max_steps: int = 5, work_dir: str | None = None,
-                 cleanup_temp: bool = True):
+                 cleanup_temp: bool = True, tool_timeout: int = 30):
         self.engine = engine            # SGLangEngine (multimodal)
         self.tool = tool                # OpenCV_Editor_Tool (or anything with async execute)
         self.max_steps = max_steps
         self.work_dir = work_dir or tempfile.gettempdir()
         self.cleanup_temp = cleanup_temp  # delete processed-image temp files after solve (R5)
+        self.tool_timeout = tool_timeout  # per-cv2-exec timeout (configurable)
 
     def _next_output_path(self, input_path: str) -> str:
         ext = os.path.splitext(input_path)[1] or ".png"
@@ -277,6 +278,7 @@ class MATSolver:
                 created_images.append(out_path)   # track for cleanup (R5)
                 result = await self.tool.execute(
                     code=gen.response, input_image_path=current_image, output_image_path=out_path,
+                    timeout=self.tool_timeout,
                 )
                 success = bool(result.get("success"))
                 changed = bool(result.get("changed", True))

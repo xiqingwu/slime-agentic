@@ -32,8 +32,8 @@ from slime.utils.types import Sample
 from core.llm_engine import SGLangEngine
 from core.mat_solver import MATSolver, baseline_answer, single_flight
 from core.mat_rewards import reward_component_means, mechanism_means
+from core.tool_loader import load_opencv_tool, tool_timeout_from_env
 
-_OPENCV_TOOL_TIMEOUT = 30
 _DEFAULT_MAX_STEPS = 5
 _DEFAULT_MAX_NEW_TOKENS = 1024  # MAT steps (problem/code/answer) are short; 2048 wasted budget
 
@@ -56,29 +56,6 @@ def _greedy_params(sampling_params: dict[str, Any]) -> dict[str, Any]:
     p = dict(sampling_params or {})
     p.update({"temperature": 0.0, "top_p": 1.0, "top_k": -1})
     return p
-
-
-_TOOL = None  # the OpenCV tool is stateless across calls -> instantiate once, share it
-
-
-def _load_opencv_tool():
-    """Instantiate the OpenCV editor tool once (cached).
-
-    The tool is stateless (``execute`` takes everything as args), so one shared
-    instance is safe across concurrent rollouts. Re-running ``exec_module`` per
-    sample — as this did before — was pure overhead (1200×8×epoch module re-execs).
-    """
-    global _TOOL
-    if _TOOL is None:
-        import importlib.util
-        from pathlib import Path
-
-        tool_file = Path(__file__).parent / "tools" / "opencv_editor" / "tool.py"
-        spec = importlib.util.spec_from_file_location("_tool_opencv_editor", tool_file)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        _TOOL = module.OpenCV_Editor_Tool()
-    return _TOOL
 
 
 def _question_and_image(sample: Sample) -> tuple[str, str | None]:
@@ -131,9 +108,9 @@ async def generate(args: Any, sample: Sample, sampling_params: dict[str, Any], e
             raise ValueError("no corrupted-image path on the sample (prompt image block / "
                              "metadata['input_image_path']); check prepare_mat_data output")
 
-        tool = _load_opencv_tool()
+        tool = load_opencv_tool()
         max_steps = int(os.environ.get("MAT_MAX_STEPS", _DEFAULT_MAX_STEPS))
-        solver = MATSolver(engine, tool, max_steps=max_steps)
+        solver = MATSolver(engine, tool, max_steps=max_steps, tool_timeout=tool_timeout_from_env())
 
         # Run the tool trajectory and the (independent) no-tool baseline concurrently;
         # both hit the same SGLang server, which batches them (R2). A4 baseline is

@@ -59,6 +59,9 @@ MAT_CORRECTION_REWARD=${MAT_CORRECTION_REWARD:-"1"}
 # step); 0 = per-call resource-limited subprocess. Keep 0 until validated on the GPU box.
 MAT_CV2_FORKSERVER=${MAT_CV2_FORKSERVER:-"0"}
 
+# Per-cv2-exec timeout (seconds) for the OpenCV tool.
+MAT_TOOL_TIMEOUT=${MAT_TOOL_TIMEOUT:-"30"}
+
 export PYTHONBUFFERED=16
 export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
 # cv2 in the tool subprocess must stay headless / single-threaded.
@@ -212,6 +215,7 @@ RUNTIME_ENV_JSON="{
     \"MAT_MAX_NEW_TOKENS\": \"${MAT_MAX_NEW_TOKENS}\",
     \"MAT_CORRECTION_REWARD\": \"${MAT_CORRECTION_REWARD}\",
     \"MAT_CV2_FORKSERVER\": \"${MAT_CV2_FORKSERVER}\",
+    \"MAT_TOOL_TIMEOUT\": \"${MAT_TOOL_TIMEOUT}\",
     \"TOKENIZERS_PARALLELISM\": \"false\",
     \"SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN\": \"1\"
   }
