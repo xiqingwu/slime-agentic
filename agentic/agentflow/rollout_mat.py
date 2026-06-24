@@ -31,6 +31,7 @@ from slime.utils.types import Sample
 
 from core.llm_engine import SGLangEngine
 from core.mat_solver import MATSolver, baseline_answer, single_flight
+from core.mat_rewards import reward_component_means, mechanism_means
 
 _OPENCV_TOOL_TIMEOUT = 30
 _DEFAULT_MAX_STEPS = 5
@@ -186,6 +187,27 @@ async def generate(args: Any, sample: Sample, sampling_params: dict[str, Any], e
         sample.status = Sample.Status.FAILED
 
     return sample
+
+
+def log_rollout(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool:
+    """Surface MAT reward components + mechanism stats per rollout step.
+
+    Wire via ``--custom-rollout-log-function-path rollout_mat.log_rollout``. Adds
+    ``mat/*`` keys to ``rollout_extra_metrics`` (slime logs them to wandb) and prints
+    a one-line summary; returns False so slime's default logging still runs.
+    """
+    try:
+        reward_dicts = [s.reward for s in samples if isinstance(getattr(s, "reward", None), dict)]
+        metas = [s.metadata for s in samples if isinstance(getattr(s, "metadata", None), dict)]
+        stats = {**reward_component_means(reward_dicts), **mechanism_means(metas)}
+        if stats:
+            print(f"[mat rollout {rollout_id}] " + " ".join(f"{k}={v:.3f}" for k, v in stats.items()), flush=True)
+            if isinstance(rollout_extra_metrics, dict):
+                for k, v in stats.items():
+                    rollout_extra_metrics[f"mat/{k}"] = v
+    except Exception:
+        traceback.print_exc()
+    return False
 
 
 def eval_log(rollout_id, args, data, extra_metrics) -> bool:

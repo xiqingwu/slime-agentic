@@ -26,8 +26,12 @@ from core.mat_rewards import (  # noqa: E402
     correction_reward,
     aggregate_mat_reward,
     mat_reward_func,
+    weights_from_env,
+    reward_component_means,
+    mechanism_means,
     DEFAULT_WEIGHTS,
 )
+import os  # noqa: E402
 
 THINK = "<think> reasoning here </think>"
 
@@ -296,6 +300,45 @@ def test_mat_reward_func_reads_baseline_output():
     out = asyncio.run(mat_reward_func(args=None, sample=FakeSample()))
     assert out["correction"] == 1.0          # rescued -> Call Gain
     assert out["score"] > DEFAULT_WEIGHTS["outcome"] + DEFAULT_WEIGHTS["correction"] - 1e-9
+
+
+# ── env-configurable weights + logging helpers (reward polish) ───────────────────
+
+def test_weights_from_env():
+    assert weights_from_env() == DEFAULT_WEIGHTS          # no env -> defaults
+    os.environ["MAT_W_CORRECTION"] = "0.8"
+    os.environ["MAT_W_OUTCOME"] = "not_a_number"          # bad value ignored
+    try:
+        w = weights_from_env()
+        assert w["correction"] == 0.8
+        assert w["outcome"] == DEFAULT_WEIGHTS["outcome"]  # unchanged (bad value)
+    finally:
+        del os.environ["MAT_W_CORRECTION"], os.environ["MAT_W_OUTCOME"]
+
+
+def test_reward_component_means():
+    dicts = [
+        {"score": 1.0, "outcome": 1.0, "acc": True, "correction": 1.0},
+        {"score": 0.0, "outcome": 0.0, "acc": False, "correction": -1.0},
+    ]
+    m = reward_component_means(dicts + [None, "junk"])     # non-dicts ignored
+    assert m["outcome"] == 0.5 and m["score"] == 0.5
+    assert m["acc"] == 0.5                                 # bool averaged
+    assert m["correction"] == 0.0
+    assert reward_component_means([]) == {}
+
+
+def test_mechanism_means():
+    metas = [
+        {"planner_steps": [1, 2, 3], "code_exec_oks": [True]},        # tool used, ran ok
+        {"planner_steps": [1, 2], "code_exec_oks": []},               # none-path, no tool
+        {"planner_steps": [1, 2, 3], "code_exec_oks": [False, True]},  # tool used, 1/2 ok
+    ]
+    m = mechanism_means(metas)
+    assert abs(m["avg_steps"] - (3 + 2 + 3) / 3) < 1e-9
+    assert abs(m["tool_call_rate"] - 2 / 3) < 1e-9         # 2 of 3 ran code
+    assert abs(m["code_exec_success_rate"] - 2 / 3) < 1e-9  # 2 ok of 3 exec attempts
+    assert mechanism_means([]) == {}
 
 
 # ── standalone runner ────────────────────────────────────────────────────────────

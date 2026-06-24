@@ -21,6 +21,7 @@ the final answer), never on a teacher-written per-step solution.
 
 from __future__ import annotations
 
+import os
 import re
 import string
 
@@ -238,6 +239,23 @@ DEFAULT_WEIGHTS = {
     "correction": 0.5,
 }
 
+# Env override for each weight (tune without editing code): MAT_W_OUTCOME, MAT_W_FORMAT,
+# MAT_W_DIAGNOSIS, MAT_W_CODE_EXEC, MAT_W_CORRECTION.
+_WEIGHT_ENV = {k: f"MAT_W_{k.upper()}" for k in DEFAULT_WEIGHTS}
+
+
+def weights_from_env() -> dict:
+    """DEFAULT_WEIGHTS with any ``MAT_W_*`` env overrides applied (bad values ignored)."""
+    w = dict(DEFAULT_WEIGHTS)
+    for key, env_name in _WEIGHT_ENV.items():
+        raw = os.environ.get(env_name)
+        if raw is not None:
+            try:
+                w[key] = float(raw)
+            except ValueError:
+                pass
+    return w
+
 
 def correction_reward(final_answer: str, baseline_answer: str, gt: str) -> float:
     """+1 if the tool rescued a failure, -1 if it broke a success, else 0 (EM-based).
@@ -364,6 +382,45 @@ async def mat_reward_func(args, sample, **kwargs) -> dict:
         corruption_gt=meta.get("corruption_gt"),
         code_exec_oks=meta.get("code_exec_oks"),
         baseline_answer=meta.get("baseline_output"),
+        weights=weights_from_env(),
     )
     result["gt"] = gt
     return result
+
+
+# ── 5. Rollout logging helpers (pure; used by rollout_mat.log_rollout) ────────────
+
+_LOG_COMPONENTS = ("score", "outcome", "format", "diagnosis", "code_exec", "correction", "acc")
+
+
+def reward_component_means(reward_dicts: list[dict]) -> dict:
+    """Mean of each reward component across a batch of reward dicts (for wandb)."""
+    dicts = [d for d in reward_dicts if isinstance(d, dict)]
+    out = {}
+    for k in _LOG_COMPONENTS:
+        vals = [float(d[k]) for d in dicts if isinstance(d.get(k), (int, float, bool))]
+        if vals:
+            out[k] = sum(vals) / len(vals)
+    return out
+
+
+def mechanism_means(metas: list[dict]) -> dict:
+    """Mechanism stats across trajectories: avg steps, tool-call rate, code-exec success.
+
+    These tell the 'selective tool use' story (plan §1.3): is the model calling the
+    tool, and when it does, does the code actually run?
+    """
+    metas = [m for m in metas if isinstance(m, dict)]
+    if not metas:
+        return {}
+    n = len(metas)
+    steps = [len(m.get("planner_steps") or []) for m in metas]
+    tool_called = [1 if (m.get("code_exec_oks")) else 0 for m in metas]
+    exec_oks = [ok for m in metas for ok in (m.get("code_exec_oks") or [])]
+    out = {
+        "avg_steps": sum(steps) / n,
+        "tool_call_rate": sum(tool_called) / n,
+    }
+    if exec_oks:
+        out["code_exec_success_rate"] = sum(1 for ok in exec_oks if ok) / len(exec_oks)
+    return out

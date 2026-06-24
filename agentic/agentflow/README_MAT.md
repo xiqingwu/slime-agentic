@@ -102,6 +102,13 @@ measure the same counterfactual.
 | `MAT_MAX_NEW_TOKENS` | 1024 | per-turn generation cap (MAT steps are short) |
 | `MAT_CORRECTION_REWARD` | 1 | generate the no-tool baseline + add the correction term |
 | `MAT_CV2_FORKSERVER` | 0 | cv2 exec backend: warm forkserver (1) vs per-call subprocess (0) |
+| `MAT_W_OUTCOME` / `MAT_W_FORMAT` / `MAT_W_DIAGNOSIS` / `MAT_W_CODE_EXEC` / `MAT_W_CORRECTION` | see `DEFAULT_WEIGHTS` | override individual reward-component weights without editing code |
+
+Reward visibility: `rollout_mat.log_rollout` (wired via
+`--custom-rollout-log-function-path`) logs `mat/*` metrics each rollout step —
+component means (outcome/format/diagnosis/code_exec/correction/acc) plus mechanism
+stats (`avg_steps`, `tool_call_rate`, `code_exec_success_rate`) so you can see what's
+driving learning and whether the tool is being used selectively.
 
 Rollout efficiency: the OpenCV tool is instantiated once and shared; the no-tool
 baseline runs concurrently with the tool loop; and the N identical greedy baselines

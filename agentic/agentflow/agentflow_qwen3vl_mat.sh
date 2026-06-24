@@ -182,13 +182,18 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
-# Custom MAT generation / reward / convert hooks (the M1–M3 deliverables)
+# Custom MAT generation / reward / convert / logging hooks (the M1–M3 deliverables)
 CUSTOM_ARGS=(
    --custom-generate-function-path rollout_mat.generate
    --custom-rm-path core.mat_rewards.mat_reward_func
+   --custom-rollout-log-function-path rollout_mat.log_rollout   # logs mat/* reward+mechanism stats
    --custom-eval-rollout-log-function-path rollout_mat.eval_log
    --custom-convert-samples-to-train-data-path custom_convert.custom_convert
 )
+
+# Optional reward-weight overrides (defaults in core/mat_rewards.DEFAULT_WEIGHTS).
+# Uncomment to tune without editing code; they're read by mat_reward_func.
+# export MAT_W_OUTCOME=1.0 MAT_W_FORMAT=0.05 MAT_W_DIAGNOSIS=0.1 MAT_W_CODE_EXEC=0.05 MAT_W_CORRECTION=0.5
 
 # Launch Ray head node
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
