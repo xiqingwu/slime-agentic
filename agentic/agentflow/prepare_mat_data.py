@@ -87,17 +87,48 @@ def _resolve_image(name: str, image_root: str) -> str:
     return os.path.join(image_root, name) if image_root else name
 
 
+def _group_by_trajectory(rows: list[dict]) -> "OrderedDict[str, dict]":
+    """Group pre-split rows by trajectory id -> {type: row} (order preserved)."""
+    groups: "OrderedDict[str, dict]" = OrderedDict()
+    for row in rows:
+        tid = trajectory_id(row.get("image_path", ""))
+        groups.setdefault(tid, {})[row.get("type")] = row
+    return groups
+
+
+def clean_bases_from_mat(rows: list[dict], image_root: str = "") -> list[dict]:
+    """Extract clean (image, question, answer) bases from MAT-Training rows.
+
+    Used by ``synthesize_mat_data.py`` to mint new corruptions from the *clean*
+    ``_ori`` images (zero extra data — multiplies the 1200 clean bases). Returns
+    ``[{clean_image_path, question, answers, trajectory_id}]``.
+    """
+    bases = []
+    for tid, steps in _group_by_trajectory(rows).items():
+        pre_problem = steps.get("pre_problem")
+        pre_answer = steps.get("pre_answer")
+        if pre_problem is None or pre_answer is None:
+            continue
+        question = pre_problem.get("problem", "")
+        answer = extract_answer(pre_answer.get("solution", "") or pre_answer.get("gt", ""))
+        if not question or not answer:
+            continue
+        bases.append({
+            "clean_image_path": _resolve_image(pre_answer["image_path"], image_root),  # the _ori
+            "question": question,
+            "answers": [answer],
+            "trajectory_id": tid,
+        })
+    return bases
+
+
 def convert(
     rows: list[dict],
     image_root: str = "",
     add_placeholder: bool = True,
 ) -> list[dict]:
     """Group pre-split rows into trajectories and emit AgentFlow start points."""
-    groups: "OrderedDict[str, dict]" = OrderedDict()
-    for row in rows:
-        img = row.get("image_path", "")
-        tid = trajectory_id(img)
-        groups.setdefault(tid, {})[row.get("type")] = row
+    groups = _group_by_trajectory(rows)
 
     out = []
     skipped = 0

@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from prepare_mat_data import convert, trajectory_id, extract_answer  # noqa: E402
+from prepare_mat_data import convert, trajectory_id, extract_answer, clean_bases_from_mat  # noqa: E402
 
 # ── Real rows from the dataset (abridged problem text) ───────────────────────────
 FIXTURE = [
@@ -107,6 +107,17 @@ def test_convert_image_root_and_no_placeholder():
     over = out[0]
     assert over["image_path"] == ["/data/imgs/overexposure_60_proc.png"]
     assert not over["problem"].startswith("<image>")
+
+
+def test_clean_bases_from_mat():
+    # bases use the CLEAN _ori image + question + answer (for data synthesis, D1)
+    bases = clean_bases_from_mat(FIXTURE, image_root="/data/imgs")
+    assert len(bases) == 3
+    over = bases[0]
+    assert over["clean_image_path"] == "/data/imgs/overexposure_60_ori.png"   # the clean image
+    assert "biggest number" in over["question"]
+    assert over["answers"] == ["81"]
+    assert bases[1]["answers"] == ["TAEST"]      # 'none' trajectory's clean answer
 
 
 def test_convert_skips_incomplete_trajectory():

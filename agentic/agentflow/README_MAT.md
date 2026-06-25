@@ -41,6 +41,7 @@ corrupted image + question
 | File | Role |
 |---|---|
 | `prepare_mat_data.py` | MAT train/benchmark JSON → AgentFlow start-point JSONL (`--benchmark` for MAT-Bench) |
+| `synthesize_mat_data.py` + `core/corruptions.py` | scale up: re-corrupt clean images into new start points (same schema) |
 | `core/mat_rewards.py` | path-independent rewards (format/diagnosis/code-exec/outcome/correction) + `mat_reward_func` |
 | `core/image_tool.py` + `tools/opencv_editor/` | OpenCV code execution (extract→path-rewrite→**resource-limited subprocess**→verify); not a true sandbox — see module docstring |
 | `core/image_worker.py` | optional warm forkserver executor (`MAT_CV2_FORKSERVER=1`) — avoids re-importing cv2 per code step |
@@ -71,6 +72,29 @@ python prepare_mat_data.py --benchmark \
 ```
 
 > Adjust `--image-root` to wherever the images actually live in your download.
+
+### Scale up with synthesized data (optional, recommended)
+
+1200 trajectories is small. Because method C needs no teacher CoT and the
+corruptions are deterministic cv2 ops, we can mint more start points by re-corrupting
+*clean* images (plan §3.6). Schema is identical, so it drops into the same launcher.
+
+```bash
+# re-corrupt MAT's own clean (_ori) images -> 4000 extra trajectories (zero extra data)
+python synthesize_mat_data.py \
+  --from-mat /data/MAT/MAT-Training/rft_agent_code_1_2k.json \
+  --image-root /data/MAT/MAT-Training/images \
+  --num 4000 --out-image-dir /data/MAT/synth_images \
+  --output /data/MAT/mat_synth.jsonl
+
+# mix with the real set (the real set covers 'crop', which synthesis excludes)
+cat /data/MAT/mat_coding_agentflow.jsonl /data/MAT/mat_synth.jsonl > /data/MAT/mat_train_all.jsonl
+# then point --prompt-data at mat_train_all.jsonl
+```
+
+Covers rotation90/180, dark, overexposure, blur, noise, none (each with randomized
+params); `crop` is excluded (needs answer-region GT). A generic clean-VQA JSONL
+(`--clean-data`, fields `{image_path|image, question, answer|answers}`) works too.
 
 ## Train
 
@@ -131,12 +155,13 @@ cd agentic/agentflow
 for t in tests/test_*.py; do python "$t"; done
 ```
 
-101 unit tests cover rewards (incl. correction-targeted, env weights, logging
-helpers), data conversion, the cv2 tool (real OpenCV) and the forkserver executor,
-the shared tool loader, the multimodal engine, custom_convert alignment, the online
-solver loop (incl. real-cv2 integration, temp-file cleanup, tool-timeout passthrough,
-and baseline single-flight dedup), the shared no-tool baseline, and eval metrics
-(F1/EM by split & corruption type, diagnosis accuracy, Call Gain/Harm).
+118 unit tests cover rewards (incl. correction-targeted, env weights, logging
+helpers), data conversion + synthesis (deterministic cv2 corruptions, real OpenCV),
+the cv2 tool and the forkserver executor, the shared tool loader, the multimodal
+engine, custom_convert alignment, the online solver loop (incl. real-cv2 integration,
+temp-file cleanup, tool-timeout passthrough, and baseline single-flight dedup), the
+shared no-tool baseline, and eval metrics (F1/EM by split & corruption type,
+diagnosis accuracy, Call Gain/Harm).
 
 ## Status
 
