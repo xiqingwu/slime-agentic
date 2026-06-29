@@ -62,6 +62,13 @@ MAT_CV2_FORKSERVER=${MAT_CV2_FORKSERVER:-"0"}
 # Per-cv2-exec timeout (seconds) for the OpenCV tool.
 MAT_TOOL_TIMEOUT=${MAT_TOOL_TIMEOUT:-"30"}
 
+# D2 — max pixels per image fed to the VLM processor. Limits visual token count
+# per turn and is the primary VRAM knob for multi-image trajectories on 4090.
+# None (unset) defers to the processor default (very large; will OOM).
+# Suggested starting value: 401408 (= 512*28*28, ~512 visual tokens per image).
+# MAT has up to 3 image turns per trajectory, so budget = 3 * visual_tokens + text.
+MAT_MAX_PIXELS=${MAT_MAX_PIXELS:-"401408"}
+
 export PYTHONBUFFERED=16
 export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
 # cv2 in the tool subprocess must stay headless / single-threaded.
@@ -216,6 +223,7 @@ RUNTIME_ENV_JSON="{
     \"MAT_CORRECTION_REWARD\": \"${MAT_CORRECTION_REWARD}\",
     \"MAT_CV2_FORKSERVER\": \"${MAT_CV2_FORKSERVER}\",
     \"MAT_TOOL_TIMEOUT\": \"${MAT_TOOL_TIMEOUT}\",
+    \"MAT_MAX_PIXELS\": \"${MAT_MAX_PIXELS}\",
     \"TOKENIZERS_PARALLELISM\": \"false\",
     \"SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN\": \"1\"
   }

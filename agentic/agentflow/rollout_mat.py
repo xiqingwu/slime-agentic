@@ -51,6 +51,22 @@ def _max_new_tokens() -> int:
     return int(os.environ.get("MAT_MAX_NEW_TOKENS", _DEFAULT_MAX_NEW_TOKENS))
 
 
+def _max_pixels() -> int | None:
+    """Maximum pixels per image passed to the VLM processor (D2 VRAM control).
+
+    None = no override (use the processor's built-in default, which is very large
+    for Qwen3-VL and will OOM on 4090).  Set MAT_MAX_PIXELS to a smaller value,
+    e.g. 401408 (= 512 * 28 * 28, ~512 visual tokens) for a conservative start.
+    """
+    raw = os.environ.get("MAT_MAX_PIXELS")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def _greedy_params(sampling_params: dict[str, Any]) -> dict[str, Any]:
     """Deterministic sampling so the baseline is identical across a GRPO group."""
     p = dict(sampling_params or {})
@@ -96,6 +112,7 @@ async def generate(args: Any, sample: Sample, sampling_params: dict[str, Any], e
     engine = SGLangEngine(
         url=url, tokenizer=state.tokenizer, sampling_params=sampling_params,
         max_new_tokens=_max_new_tokens(), enable_thinking=False, processor=processor,
+        max_pixels=_max_pixels(),
     )
 
     if not isinstance(sample.metadata, dict):

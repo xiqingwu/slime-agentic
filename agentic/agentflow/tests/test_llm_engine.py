@@ -171,6 +171,35 @@ def test_generate_multimodal_path():
     assert proc.chat_template_kwargs.get("enable_thinking") is False
 
 
+def test_generate_multimodal_max_pixels_injected():
+    """max_pixels is forwarded into images_kwargs when set on the engine."""
+    captured_kwargs = {}
+
+    class CapturingProcessor(FakeProcessor):
+        def __call__(self, text=None, **kwargs):
+            captured_kwargs.update(kwargs)
+            return {"input_ids": [[10, 11, 12]], "pixel_values": "PV", "image_grid_thw": "THW"}
+
+    saved = (eng._post, eng._process_vision_info, eng._build_processor_kwargs, eng._encode_image)
+    eng._post = lambda url, payload, headers=None: asyncio.coroutine(lambda: CANNED_OUT)()
+    eng._process_vision_info = lambda messages, processor: {"images": ["PIL_OBJ"], "videos": []}
+    eng._build_processor_kwargs = lambda mm: {"images_kwargs": {"return_tensors": "pt"}}
+    eng._encode_image = lambda image: "data:enc"
+
+    async def fake_post(url, payload, headers=None):
+        return CANNED_OUT
+
+    eng._post = fake_post
+    try:
+        engine = SGLangEngine(url="http://x/generate", tokenizer=FakeTokenizer(),
+                              sampling_params={}, processor=CapturingProcessor(), max_pixels=401408)
+        asyncio.run(engine.generate(_image_msgs()))
+    finally:
+        eng._post, eng._process_vision_info, eng._build_processor_kwargs, eng._encode_image = saved
+
+    assert captured_kwargs.get("images_kwargs", {}).get("max_pixels") == 401408
+
+
 def test_generate_processor_but_no_images_uses_text_path():
     """Processor present but a text-only turn must still use the text path."""
     captured = {}

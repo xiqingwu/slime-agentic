@@ -133,10 +133,12 @@ class SGLangEngine:
         max_new_tokens: int | None = None,
         enable_thinking: bool = False,
         processor: Any = None,
+        max_pixels: int | None = None,
     ):
         self.url = url
         self.tokenizer = tokenizer
         self.processor = processor
+        self.max_pixels = max_pixels
         self.sampling_params = dict(sampling_params)
         self.enable_thinking = enable_thinking
         if max_new_tokens is not None:
@@ -155,6 +157,8 @@ class SGLangEngine:
         )
         mm = _process_vision_info(messages, self.processor)  # {"images": [...], "videos": [...]}
         kwargs = _build_processor_kwargs(mm)
+        if self.max_pixels is not None:
+            kwargs["images_kwargs"] = {**kwargs.get("images_kwargs", {}), "max_pixels": self.max_pixels}
         proc_out = self.processor(text=prompt_text, **kwargs)
 
         input_ids = list(proc_out["input_ids"][0])
