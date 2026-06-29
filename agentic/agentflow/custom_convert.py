@@ -142,6 +142,7 @@ def custom_convert(args, samples):
         "raw_reward": raw_reward_list,
         "truncated": truncated_list,
         "sample_indices": sample_indices,
+        "rollout_ids": sample_indices,  # shared reward across turns from same trajectory
     }
     if has_rollout_log_probs:
         train_data["rollout_log_probs"] = rollout_log_probs_list

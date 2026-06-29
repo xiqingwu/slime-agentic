@@ -54,7 +54,7 @@ class GenerationOutput:
 async def _post(url: str, payload: dict, headers: dict | None = None):
     from slime.utils.http_utils import post
 
-    return await post(url, payload, headers)
+    return await post(url, payload, headers=headers)
 
 
 def _process_vision_info(messages: list, processor) -> dict:
