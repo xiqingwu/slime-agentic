@@ -90,18 +90,33 @@ def test_turn_expansion_aligns_multimodal_per_turn():
     assert mm[1] is None and mm[2] is None
 
 
-def test_trim_keeps_multimodal_in_sync():
-    # 3 sequences but global_batch_size=2 -> trim to 2; multimodal list must trim too.
+def test_no_trim_keeps_all_sequences():
+    # v0.3.0: no sample-count trimming. build_dp_schedule packs by rollout, so all
+    # 3 sequences are kept even though global_batch_size=2 (was: trimmed to 2).
     samples = [
         FakeSample(0, 1.0, multimodal_train_inputs={"pixel_values": "A"}),
         FakeSample(1, 1.0, multimodal_train_inputs={"pixel_values": "B"}),
         FakeSample(2, 1.0, multimodal_train_inputs={"pixel_values": "C"}),
     ]
     out = custom_convert(_args(global_batch_size=2), samples)
-    assert len(out["tokens"]) == 2
+    assert len(out["tokens"]) == 3
     mm = out["multimodal_train_inputs"]
-    assert len(mm) == 2
-    assert mm == [{"pixel_values": "A"}, {"pixel_values": "B"}]
+    assert mm == [{"pixel_values": "A"}, {"pixel_values": "B"}, {"pixel_values": "C"}]
+
+
+def test_rollout_ids_group_turns_of_a_trajectory():
+    # All turns of one trajectory share a rollout_id (= its sample.index) so
+    # v0.3.0's scheduler keeps them in one rollout group; turns are contiguous.
+    turns = [
+        {"tokens": [1, 2], "response_length": 1, "loss_mask": [1]},
+        {"tokens": [3, 4], "response_length": 1, "loss_mask": [1]},
+    ]
+    samples = [
+        FakeSample(7, 1.0, train_metadata={"turns": turns}),
+        FakeSample(9, 0.0),
+    ]
+    out = custom_convert(_args(), samples)
+    assert out["rollout_ids"] == out["sample_indices"] == [7, 7, 9]
 
 
 def test_mixed_turn_and_nonturn_alignment():

@@ -8,11 +8,7 @@ Usage:
      --custom-convert-samples-to-train-data-path custom_convert.custom_convert
 """
 
-import logging
-
 import torch
-
-logger = logging.getLogger(__name__)
 
 
 def custom_convert(args, samples):
@@ -107,33 +103,14 @@ def custom_convert(args, samples):
             if mm is not None:
                 has_multimodal = True
 
-    # ── 3. Trim to global_batch_size multiple ──
-    # After turn expansion the sample count is no longer guaranteed to be
-    # divisible by global_batch_size.  The training data-iterator requires
-    # num_local_samples % (global_batch_size / dp_size) == 0, which is
-    # satisfied when the total is a multiple of global_batch_size.
-    gbs = args.global_batch_size
-    total = len(tokens_list)
-    trim_to = (total // gbs) * gbs
-    if trim_to == 0:
-        trim_to = total
-    if trim_to < total:
-        logger.info(
-            "custom_convert: trimming expanded samples from %d to %d "
-            "(global_batch_size=%d)",
-            total, trim_to, gbs,
-        )
-        tokens_list = tokens_list[:trim_to]
-        response_lengths = response_lengths[:trim_to]
-        loss_masks = loss_masks[:trim_to]
-        rewards = rewards[:trim_to]
-        raw_reward_list = raw_reward_list[:trim_to]
-        truncated_list = truncated_list[:trim_to]
-        sample_indices = sample_indices[:trim_to]
-        if has_rollout_log_probs:
-            rollout_log_probs_list = rollout_log_probs_list[:trim_to]
-        multimodal_list = multimodal_list[:trim_to]
-
+    # ── 3. Assemble train_data (no sample-count trimming) ──
+    # slime v0.3.0's build_dp_schedule groups training samples by rollout_id and
+    # packs `global_batch_size` *rollouts* (not samples) per step, dropping only
+    # whole trailing rollouts that don't fit. The legacy trim-to-multiple-of-
+    # global_batch_size (a v0.2.2 data-iterator workaround) operated on the expanded
+    # *sample* count and could slice a trajectory's trailing turns off mid-rollout,
+    # corrupting that rollout's reward amortization. Letting the scheduler do the
+    # packing keeps every trajectory's turns intact.
     train_data = {
         "tokens": tokens_list,
         "response_lengths": response_lengths,
@@ -142,7 +119,10 @@ def custom_convert(args, samples):
         "raw_reward": raw_reward_list,
         "truncated": truncated_list,
         "sample_indices": sample_indices,
-        "rollout_ids": sample_indices,  # shared reward across turns from same trajectory
+        # v0.3.0 groups all turns of one trajectory into a single rollout via this
+        # id; every turn carries the source trajectory's sample.index, and turns of
+        # the same trajectory are contiguous (see build_dp_schedule's grouping).
+        "rollout_ids": sample_indices,
     }
     if has_rollout_log_probs:
         train_data["rollout_log_probs"] = rollout_log_probs_list
