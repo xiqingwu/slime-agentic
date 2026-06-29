@@ -48,6 +48,7 @@ class UpdateWeightFromTensor:
         self.model_name = model_name
         self.quantization_config = quantization_config
         self.weight_version = 0
+        self.update_weight_metrics: dict[str, float] = {}
 
         self._hf_weight_iterator = HfWeightIteratorBase.create(
             args=args, model=model, model_name=model_name, quantization_config=quantization_config
@@ -134,6 +135,14 @@ class UpdateWeightFromTensor:
             if start <= dist.get_rank() < end:
                 self._ipc_engine = engine
 
+    def pop_metrics(self) -> dict[str, float]:
+        """
+        Return and clear ``update_weight_metrics``. Empty under colocate today;
+        kept symmetric with UpdateWeightFromDistributed so the actor can drain unconditionally.
+        """
+        out, self.update_weight_metrics = self.update_weight_metrics, {}
+        return out
+
     @torch.no_grad()
     def update_weights(self) -> None:
         """
@@ -158,9 +167,16 @@ class UpdateWeightFromTensor:
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
             refs, long_lived_tensors = self._send_hf_params(hf_named_tensors)
             ray.get(refs)
-            del long_lived_tensors
+            # Free GPU tensors so the caching allocator can reuse the blocks,
+            # then release CUDA IPC cache entries whose consumers (sglang engines)
+            # have already closed their IPC handles.
+            del long_lived_tensors, hf_named_tensors
+            torch.cuda.ipc_collect()
 
         dist.barrier(group=get_gloo_group())
+        # After the barrier all engines have returned, so every rank's last-chunk
+        # IPC handles are now released by the consumers.  Clean them up.
+        torch.cuda.ipc_collect()
 
         # int4/fp4 post_process
         if rank == 0:
@@ -212,7 +228,6 @@ def _send_to_colocated_engine(
     if ipc_gather_group is None:
         return [], None
 
-    # TODO improve
     long_live_tensors = []
 
     if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):

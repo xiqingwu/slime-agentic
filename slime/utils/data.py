@@ -89,15 +89,30 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
         return origin_samples
 
     if processor:
-        filtered_samples = []
+        # Use processor only for samples with actual multimodal content; use batched tokenizer for text-only.
+        text_only = []
+        multimodal = []
         for sample in origin_samples:
+            if sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
+                multimodal.append(sample)
+            else:
+                text_only.append(sample)
+        filtered_samples = []
+        if text_only:
+            prompts = [s.prompt for s in text_only]
+            input_ids_list = tokenizer(prompts, add_special_tokens=False)["input_ids"]
+            for sample, input_ids in zip(text_only, input_ids_list, strict=True):
+                if len(input_ids) <= max_length:
+                    filtered_samples.append(sample)
+        if multimodal:
             from slime.utils.processing_utils import process_vision_info
 
-            multimodal_inputs = process_vision_info(sample.prompt, processor)
-            processor_output = processor(text=sample.prompt, **multimodal_inputs)
-            input_ids = processor_output["input_ids"][0]
-            if len(input_ids) <= max_length:
-                filtered_samples.append(sample)
+            for sample in multimodal:
+                multimodal_inputs = process_vision_info(sample.prompt, processor)
+                processor_output = processor(text=sample.prompt, **multimodal_inputs)
+                input_ids = processor_output["input_ids"][0]
+                if len(input_ids) <= max_length:
+                    filtered_samples.append(sample)
     else:
         prompts = [sample.prompt for sample in origin_samples]
         input_ids_list = tokenizer(prompts, add_special_tokens=False)["input_ids"]
@@ -146,7 +161,14 @@ def _build_messages(data: dict, prompt_key: str, as_conversation: bool, multimod
                             f"Not enough {mt.name} data: more '{mt.placeholder}' placeholders in prompt "
                             f"than {mt.name}s provided in data"
                         )
-                        content_list.append({"type": mt.name, mt.name: content.pop(0)})
+                        item = content.pop(0)
+                        # Support rich image config from https://github.com/QwenLM/Qwen3-VL/blob/main/README.md
+                        # "images": [{"type": "image", "image": "path/to/img/01.jpeg", "max_pixels": 50176, "min_pixels": 50176}, {...}]
+                        if isinstance(item, dict):
+                            content_list.append(item)
+                        # "images": ["path/to/img/01.jpeg", "url", "base64enc"]
+                        else:
+                            content_list.append({"type": mt.name, mt.name: item})
                     else:
                         content_list.append({"type": "text", "text": segment})
                 message["content"] = content_list
@@ -265,20 +287,6 @@ class Dataset:
 
     def __len__(self):
         return len(self.samples)
-
-
-def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
-    # use first fit to get the number of micro batches
-    batches = []
-    for length in total_lengths:
-        for i in range(len(batches)):
-            if batches[i] + length <= max_tokens_per_gpu:
-                batches[i] += length
-                break
-        else:
-            batches.append(length)
-
-    return len(batches)
 
 
 def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):

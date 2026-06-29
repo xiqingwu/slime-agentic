@@ -13,6 +13,7 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
+from slime.backends.sglang_utils.external import get_server_info
 from slime.ray.ray_actor import RayActor
 from slime.utils.http_utils import get_host_info
 
@@ -26,9 +27,6 @@ def get_base_gpu_id(args, rank):
     else:
         num_actor_gpus = 0 if args.debug_rollout_only else args.actor_num_gpus_per_node * args.actor_num_nodes
         start_index = (num_actor_gpus + rank * num_gpus) % args.num_gpus_per_node
-        if args.use_critic:
-            num_critic_gpus = args.critic_num_gpus_per_node * args.critic_num_nodes
-            start_index = (num_actor_gpus + num_critic_gpus + rank * num_gpus) % args.num_gpus_per_node
     return start_index
 
 
@@ -51,6 +49,15 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
 
 
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
+    if getattr(server_args, "encoder_only", False):
+        from sglang.srt.disaggregation.encode_server import launch_server_process as sglang_launch_server_process
+
+        return sglang_launch_server_process(
+            server_args,
+            start_method="spawn",
+            wait_for_server=True,
+        )
+
     from sglang.srt.entrypoints.http_server import launch_server
 
     multiprocessing.set_start_method("spawn", force=True)
@@ -58,8 +65,8 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
     p.start()
 
-    if server_args.node_rank != 0:
-        return
+    if getattr(server_args, "node_rank", 0) != 0:
+        return p
 
     _wait_server_healthy(
         base_url=server_args.url(),
@@ -82,21 +89,6 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
                 response = session.get(f"{base_url}/health_generate", headers=headers)
                 if response.status_code == 200:
                     break
-            except requests.RequestException:
-                pass
-
-            if not is_process_alive():
-                raise Exception("Server process terminated unexpectedly.")
-
-            time.sleep(2)
-
-        # use flush_cache to make sure the working queue is empty, so that we can do offload
-        while True:
-            try:
-                response = session.get(f"{base_url}/flush_cache", headers=headers)
-                if response.status_code == 200:
-                    break
-
             except requests.RequestException:
                 pass
 
@@ -178,11 +170,6 @@ class SGLangEngine(RayActor):
     def _init_external(self, expect_server_args, external_engine_need_check_fields):
         logger.info(f"Use external SGLang engine (rank={self.rank}, expect_server_args={expect_server_args})")
 
-        def _get_actual_server_args():
-            response = requests.get(f"http://{self.server_host}:{self.server_port}/get_server_info")
-            response.raise_for_status()
-            return response.json()
-
         def _sanity_check_server_args(actual_server_args, expect_server_args):
             for name in external_engine_need_check_fields:
                 expect_value = expect_server_args.get(name)
@@ -191,33 +178,39 @@ class SGLangEngine(RayActor):
                     actual_value == expect_value
                 ), f"{name=} {expect_value=} {actual_value=} {expect_server_args=} {actual_server_args=}"
 
-        _wait_server_healthy(
-            base_url=f"http://{self.server_host}:{self.server_port}",
-            api_key=None,
-            is_process_alive=lambda: True,
-        )
-        actual_server_args = _get_actual_server_args()
+        actual_server_args = get_server_info(f"http://{self.server_host}:{self.server_port}")
         _sanity_check_server_args(actual_server_args, expect_server_args)
+        self._register_to_router(expect_server_args)
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
         self.process = launch_server_process(ServerArgs(**server_args_dict))
+        self._register_to_router(server_args_dict)
+
+    def _register_to_router(self, server_args_dict):
+        if self.worker_type == "encoder":
+            return
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
-            if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_slime_router:
-                assert (
-                    self.worker_type == "regular"
-                ), "pd disaggregation is not supported in old router or slime router."
+            worker_url = f"http://{self.server_host}:{self.server_port}"
+            if parse(sglang_router.__version__) <= parse("0.2.1"):
+                assert self.worker_type == "regular", "pd disaggregation is not supported in old router."
                 response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/add_worker?url=http://{self.server_host}:{self.server_port}"
+                    f"http://{self.router_ip}:{self.router_port}/add_worker?url={worker_url}",
                 )
             else:
                 payload = {
-                    "url": f"http://{self.server_host}:{self.server_port}",
+                    "url": worker_url,
                     "worker_type": self.worker_type,
                 }
                 if self.worker_type == "prefill":
-                    payload["bootstrap_port"] = server_args_dict["disaggregation_bootstrap_port"]
+                    bootstrap_port = server_args_dict.get("disaggregation_bootstrap_port")
+                    if bootstrap_port is None:
+                        raise RuntimeError(
+                            f"Prefill worker {worker_url} does not have disaggregation_bootstrap_port; "
+                            "cannot register it to the PD router."
+                        )
+                    payload["bootstrap_port"] = bootstrap_port
                 response = requests.post(
                     f"http://{self.router_ip}:{self.router_port}/workers",
                     json=payload,
@@ -303,6 +296,8 @@ class SGLangEngine(RayActor):
                 response = requests.get(f"http://{self.server_host}:{self.server_port}/flush_cache")
                 if response.status_code == 200:
                     break
+                logger.info(f"Error flushing cache: HTTP {response.status_code} {response.text!r}")
+                time.sleep(1)
             except NewConnectionError as e:
                 raise e
             except Exception as e:
@@ -312,15 +307,20 @@ class SGLangEngine(RayActor):
         else:
             raise TimeoutError("Timeout while flushing cache.")
 
+    def get_url(self):
+        if self.node_rank != 0:
+            return None
+        return f"http://{self.server_host}:{self.server_port}"
+
     def shutdown(self):
         if self.args.rollout_external:
             return
 
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
-        if self.node_rank == 0:
+        if self.worker_type != "encoder" and self.node_rank == 0:
             worker_url = f"http://{self.server_host}:{self.server_port}"
             response = None
-            if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_slime_router:
+            if parse(sglang_router.__version__) <= parse("0.2.1"):
                 response = requests.post(
                     f"http://{self.router_ip}:{self.router_port}/remove_worker?url=http://{self.server_host}:{self.server_port}"
                 )
@@ -349,10 +349,19 @@ class SGLangEngine(RayActor):
     def get_weight_version(self):
         if self.node_rank != 0:
             return
-        url = f"http://{self.server_host}:{self.server_port}/get_weight_version"
+        url = f"http://{self.server_host}:{self.server_port}/weight_version"
         response = requests.get(url)
         response.raise_for_status()
         return response.json()["weight_version"]
+
+    def set_weight_version(self, new_version: str):
+        """Bump the engine's recorded weight version without changing weights.
+
+        Used by the delta-update path when a sync produced no bytes (e.g. an
+        all-zero diff): we still need the engine's version to track the
+        updater's, otherwise the CI version-equality check will trip.
+        """
+        return self._make_request("update_weight_version", {"new_version": str(new_version)})
 
     def release_memory_occupation(self):
         self.flush_cache()
@@ -369,6 +378,30 @@ class SGLangEngine(RayActor):
 
     def check_weights(self, action: str):
         return self._make_request("weights_checker", {"action": action})
+
+    def update_weights_from_disk(
+        self,
+        model_path: str,
+        load_format: str | None = None,
+        weight_version: str | None = None,
+        files: list[str] | None = None,
+    ):
+        """Reload weights from *model_path* without restarting the engine.
+
+        Standard HF reload: ``model_path`` is the checkpoint directory.
+        Delta (``load_format="delta"``): ``model_path`` is the parent of the
+        per-sync version subdir and ``files`` is the basenames within it to read +
+        apply. Each delta call is independent — sender owns batching, sync
+        boundaries, cleanup.
+        """
+        payload: dict = {"model_path": model_path}
+        if load_format is not None:
+            payload["load_format"] = load_format
+        if weight_version is not None:
+            payload["weight_version"] = weight_version
+        if files is not None:
+            payload["files"] = files
+        return self._make_request("update_weights_from_disk", payload)
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
         return self._make_request(
@@ -396,7 +429,15 @@ class SGLangEngine(RayActor):
             pass
 
     def update_weights_from_distributed(
-        self, names, dtypes, shapes, group_name, flush_cache=False, weight_version: str | None = None
+        self,
+        names,
+        dtypes,
+        shapes,
+        group_name,
+        flush_cache=False,
+        weight_version: str | None = None,
+        load_format: str | None = None,
+        delta=None,
     ):
         payload = {
             "names": names,
@@ -407,6 +448,21 @@ class SGLangEngine(RayActor):
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
+        if load_format is not None:
+            payload["load_format"] = load_format
+        if delta is not None:
+            # DeltaSpec → JSON string. Receiver reconstructs via DeltaEncoding(...) +
+            # DeltaParam(**p); avoids depending on FastAPI's nested-dataclass coercion.
+            import json
+            from dataclasses import asdict
+
+            payload["delta"] = json.dumps(
+                {
+                    "encoding": delta.encoding.value,
+                    "params": [asdict(p) for p in delta.params],
+                    "checksum": delta.checksum,
+                }
+            )
         return self._make_request(
             "update_weights_from_distributed",
             payload,
@@ -529,11 +585,14 @@ def _compute_server_args(
         "skip_server_warmup": True,
         # always enable draft weights cpu backup so that we run training without mtp weights.
         "enable_draft_weights_cpu_backup": True,
+        # Always enable Prometheus metrics so the router /engine_metrics endpoint
+        # is available for external scraping.
+        "enable_metrics": True,
     }
 
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
-        kwargs["load_balance_method"] = "round_robin"
+        kwargs["load_balance_method"] = "follow_bootstrap_room"
         assert (
             disaggregation_bootstrap_port is not None
         ), "disaggregation_bootstrap_port must be set for prefill worker"
@@ -541,6 +600,8 @@ def _compute_server_args(
     elif worker_type == "decode":
         kwargs["disaggregation_mode"] = "decode"
         kwargs["prefill_round_robin_balance"] = True
+    elif worker_type == "encoder":
+        kwargs["encoder_only"] = True
 
     if args.use_rollout_routing_replay:
         kwargs["enable_return_routed_experts"] = True
@@ -548,22 +609,35 @@ def _compute_server_args(
         kwargs["dtype"] = "float16"
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
+    server_arg_fields = dataclasses.fields(ServerArgs)
+    server_arg_field_names = {attr.name for attr in server_arg_fields}
     unused_keys = set(kwargs.keys())
-    for attr in dataclasses.fields(ServerArgs):
+    for attr in server_arg_fields:
         if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
             continue
         if hasattr(args, f"sglang_{attr.name}") and attr.name not in kwargs:
             kwargs[attr.name] = getattr(args, f"sglang_{attr.name}")
         unused_keys.discard(attr.name)
 
-    # Per-engine-group overrides from --sglang-config YAML.
+    # Per-server-group overrides from --sglang-config YAML.
     # Applied after base args so they take highest priority.
     if sglang_overrides:
         for key, value in sglang_overrides.items():
-            if key in kwargs:
-                logger.info(f"sglang_overrides: overriding {key}={kwargs[key]} -> {value} (rank={rank})")
-            kwargs[key] = value
-            unused_keys.discard(key)
+            normalized_key = key.replace("-", "_")
+            if normalized_key != key:
+                logger.warning(
+                    f"sglang_overrides key '{key}' normalized to '{normalized_key}' (rank={rank}). "
+                    "Please use underscore style in YAML overrides."
+                )
+            if normalized_key in kwargs:
+                logger.info(
+                    f"sglang_overrides: overriding {normalized_key}={kwargs[normalized_key]} -> {value} (rank={rank})"
+                )
+            kwargs[normalized_key] = value
+            if normalized_key in server_arg_field_names:
+                unused_keys.discard(normalized_key)
+            else:
+                unused_keys.add(normalized_key)
 
     # for compatibility with old args
     if len(unused_keys) > 0:
@@ -578,9 +652,20 @@ _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS = [
     "model_path",
     "trust_remote_code",
     "random_seed",
+    "host",
+    "port",
     "nccl_port",
+    "nnodes",
+    "node_rank",
     "dist_init_addr",
+    "gpu_id_step",
+    "base_gpu_id",
+    "tp_size",
+    "dp_size",
+    "pp_size",
+    "ep_size",
     "skip_server_warmup",
     "enable_draft_weights_cpu_backup",
+    "enable_metrics",
     "mem_fraction_static",
 ]
