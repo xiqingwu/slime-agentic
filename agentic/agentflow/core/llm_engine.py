@@ -19,6 +19,7 @@ are unit-testable offline.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Any
 
@@ -63,43 +64,19 @@ def _process_vision_info(messages: list, processor) -> dict:
     return process_vision_info(messages, processor)
 
 
-def _build_processor_kwargs(multimodal_inputs: dict | None) -> dict:
-    from slime.utils.processing_utils import build_processor_kwargs
-
-    return build_processor_kwargs(multimodal_inputs)
-
-
-def _collect_image_paths(messages: list) -> list[str]:
-    """Extract image file paths from messages (PIL open-able strings)."""
-    paths = []
-    for msg in messages:
+def _with_image_limits(messages: list[dict], max_pixels: int | None) -> list[dict]:
+    """Return messages with a per-image pixel cap, without mutating the caller."""
+    if max_pixels is None:
+        return messages
+    limited = copy.deepcopy(messages)
+    for msg in limited:
         content = msg.get("content")
-        if isinstance(content, list):
-            for block in content:
-                if block.get("type") == "image":
-                    path = block.get("image")
-                    if isinstance(path, str):
-                        paths.append(path)
-    return paths
-
-
-def _collect_images(messages: list) -> list:
-    """Extract raw image objects/paths from messages without calling the processor."""
-    images = []
-    for msg in messages:
-        content = msg.get("content")
-        if isinstance(content, list):
-            for block in content:
-                if block.get("type") == "image":
-                    img = block.get("image")
-                    if img is not None:
-                        images.append(img)
-        elif isinstance(content, str) and msg.get("role") == "user":
-            # String content with an image key alongside (legacy format).
-            img = msg.get("image")
-            if img is not None:
-                images.append(img)
-    return images
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "image":
+                block["max_pixels"] = max_pixels
+    return limited
 
 
 def _encode_image(image) -> str:
@@ -182,25 +159,32 @@ class SGLangEngine:
 
     def _encode_multimodal(self, messages: list[dict]):
         """Return (prompt_text, input_ids, multimodal_train_inputs, images)."""
-        from PIL import Image
+        limited_messages = _with_image_limits(messages, self.max_pixels)
 
-        # 1. Apply chat template to get the prompt string with vision markers.
+        # Render once for logging, then let the processor tokenize the original
+        # structured messages atomically.  In particular, do not feed a rendered
+        # prompt and a separately collected image list back into Qwen3-VL: newer
+        # transformers releases can expand their image markers differently in
+        # those two phases, leaving input_ids and image_grid_thw out of sync.
         prompt_text = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True,
+            limited_messages, tokenize=False, add_generation_prompt=True,
             enable_thinking=self.enable_thinking,
         )
-        # 2. Collect image file paths from messages, open as PIL Images.
-        paths = _collect_image_paths(messages)
-        pil_images = [Image.open(p) for p in paths]
-        # 3. Call processor with string text + PIL images (verified working in
-        #    isolation with transformers 5.6.0). No _process_vision_info needed.
-        proc_out = self.processor(text=prompt_text, images=pil_images)
+        proc_out = self.processor.apply_chat_template(
+            limited_messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+            enable_thinking=self.enable_thinking,
+        )
 
-        input_ids = list(proc_out["input_ids"][0])
+        input_ids = proc_out["input_ids"][0].tolist()
         multimodal_train_inputs = {
             k: v for k, v in proc_out.items() if k not in ("input_ids", "attention_mask")
         } or None
-        return prompt_text, input_ids, multimodal_train_inputs, pil_images
+        images = (_process_vision_info(limited_messages, self.processor).get("images") or [])
+        return prompt_text, input_ids, multimodal_train_inputs, images
 
     def _encode_text(self, messages: list[dict]):
         prompt_text = self.tokenizer.apply_chat_template(
