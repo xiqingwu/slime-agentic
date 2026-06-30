@@ -31,6 +31,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "${ROOT_DIR}/scripts/models/qwen3-vl-4B.sh"
 
 MODEL_PATH="/data/models/qwen3_vl_4b"
+POLICY_LOAD=${POLICY_LOAD:-}
 
 # ── Memory: reserve almost nothing for SGLang ───────────────────────────────
 TMS_ARGS=(--train-memory-margin-bytes 0)
@@ -39,6 +40,9 @@ CKPT_ARGS=(
    --hf-checkpoint "${MODEL_PATH}"
    --ref-load "${MODEL_PATH}"
 )
+if [ -n "${POLICY_LOAD}" ]; then
+   CKPT_ARGS+=(--load "${POLICY_LOAD}")
+fi
 
 # Ultra-minimal for 24GB: 1 sample at a time, short responses
 ROLLOUT_ARGS=(

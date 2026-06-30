@@ -98,9 +98,37 @@ params); `crop` is excluded (needs answer-region GT). A generic clean-VQA JSONL
 
 ## Train
 
+### Stage 1: supervised tool-use bootstrap
+
+The base VLM may skip directly to ``<answer>`` and never explore ``<code>``. Build
+step-level SFT data from MAT's teacher trajectories and bootstrap the protocol first:
+
 ```bash
-# fill in checkpoint/data paths inside the script first
-bash agentflow_qwen3vl_mat.sh
+python prepare_mat_sft_data.py \
+  --input /data/MAT/MAT-Training/rft_agent_code_1_2k.json \
+  --output /data/MAT/mat_coding_sft.jsonl \
+  --image-root /data/MAT/MAT-Training/images
+
+bash train_mat_sft.sh
+```
+
+The converter retains every teacher ``pre_problem``, ``pre_code`` and
+``pre_answer`` row as an independent multimodal SFT turn. Use the resulting SFT
+checkpoint as the policy initialization and verify the online code path before RL:
+
+```bash
+POLICY_LOAD=/data/AgentFlow_Qwen3VL_MAT_SFT \
+  bash run_mat_2gpu_smoke.sh
+```
+
+The bootstrap gate is a non-zero ``tool_call_rate`` plus at least one successful
+``code executed; image updated`` trajectory.
+
+### Stage 2: online RL
+
+```bash
+POLICY_LOAD=/data/AgentFlow_Qwen3VL_MAT_SFT \
+  bash agentflow_qwen3vl_mat.sh
 ```
 
 Uses `scripts/models/qwen3-vl-4B.sh` for the LLM backbone. Convert the Qwen3-VL

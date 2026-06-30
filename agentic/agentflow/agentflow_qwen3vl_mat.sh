@@ -91,18 +91,26 @@ source "${MODEL_CONFIG}"
 
 # Number of GPUs to use (8×4090).
 N_GPUS=${N_GPUS:-8}
+HF_CHECKPOINT=${HF_CHECKPOINT:-/data/models/qwen3_vl_4b}
+REF_LOAD=${REF_LOAD:-/data/models/qwen3_vl_4b_dist/}
+POLICY_LOAD=${POLICY_LOAD:-}
+RL_SAVE_PATH=${RL_SAVE_PATH:-/data/AgentFlow_Qwen3VL_MAT/}
+PROMPT_DATA=${PROMPT_DATA:-/data/MAT/mat_coding_agentflow.jsonl}
 
-# Checkpoint arguments  (TODO: point at your converted Qwen3-VL paths)
+# POLICY_LOAD should point at the Stage-1 SFT save directory when bootstrapping RL.
 CKPT_ARGS=(
-   --hf-checkpoint   /data/models/qwen3_vl_4b
-   --ref-load        /data/models/qwen3_vl_4b_dist/
-   --save            /data/AgentFlow_Qwen3VL_MAT/
+   --hf-checkpoint   "${HF_CHECKPOINT}"
+   --ref-load        "${REF_LOAD}"
+   --save            "${RL_SAVE_PATH}"
    --save-interval   100
 )
+if [ -n "${POLICY_LOAD}" ]; then
+   CKPT_ARGS+=(--load "${POLICY_LOAD}")
+fi
 
 # Rollout arguments
 ROLLOUT_ARGS=(
-   --prompt-data /data/MAT/mat_coding_agentflow.jsonl
+   --prompt-data "${PROMPT_DATA}"
    --input-key   problem
    --label-key   gt
    --multimodal-keys '{"image": "image_path"}'   # image_path is a LIST (see prepare_mat_data)
