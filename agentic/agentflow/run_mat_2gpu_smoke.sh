@@ -42,11 +42,9 @@ if [ -n "${POLICY_LOAD}" ]; then
 fi
 
 ROLLOUT_ARGS=(
-   --prompt-data /data/MAT/mat_smoke_subset.jsonl
+   --prompt-data /data/MAT/mat_coding_agentflow.jsonl
    --input-key problem
    --label-key gt
-   --multimodal-keys '{"image": "image_path"}'
-   --metadata-key metadata
    --apply-chat-template
    --rollout-shuffle
    --reward-key score
