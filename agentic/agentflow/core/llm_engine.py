@@ -69,9 +69,45 @@ def _build_processor_kwargs(multimodal_inputs: dict | None) -> dict:
     return build_processor_kwargs(multimodal_inputs)
 
 
+def _collect_image_paths(messages: list) -> list[str]:
+    """Extract image file paths from messages (PIL open-able strings)."""
+    paths = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if block.get("type") == "image":
+                    path = block.get("image")
+                    if isinstance(path, str):
+                        paths.append(path)
+    return paths
+
+
+def _collect_images(messages: list) -> list:
+    """Extract raw image objects/paths from messages without calling the processor."""
+    images = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if block.get("type") == "image":
+                    img = block.get("image")
+                    if img is not None:
+                        images.append(img)
+        elif isinstance(content, str) and msg.get("role") == "user":
+            # String content with an image key alongside (legacy format).
+            img = msg.get("image")
+            if img is not None:
+                images.append(img)
+    return images
+
+
 def _encode_image(image) -> str:
     from slime.utils.processing_utils import encode_image_for_rollout_engine
+    from PIL import Image
 
+    if isinstance(image, str):
+        image = Image.open(image)
     return encode_image_for_rollout_engine(image)
 
 
@@ -145,28 +181,26 @@ class SGLangEngine:
             self.sampling_params["max_new_tokens"] = max_new_tokens
 
     def _encode_multimodal(self, messages: list[dict]):
-        """Return (prompt_text, input_ids, multimodal_train_inputs, images) via processor."""
-        # Pass enable_thinking just like the text path: Qwen3-VL's chat template can
-        # default thinking ON and auto-inject <think></think>, which would collide
-        # with MAT's protocol where the model writes its own <think> content and the
-        # format regex expects exactly one. Extra kwargs are merged into the template
-        # context, so this is a no-op for processors that don't read it.
+        """Return (prompt_text, input_ids, multimodal_train_inputs, images)."""
+        from PIL import Image
+
+        # 1. Apply chat template to get the prompt string with vision markers.
         prompt_text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True,
             enable_thinking=self.enable_thinking,
         )
-        mm = _process_vision_info(messages, self.processor)  # {"images": [...], "videos": [...]}
-        kwargs = _build_processor_kwargs(mm)
-        if self.max_pixels is not None:
-            kwargs["images_kwargs"] = {**kwargs.get("images_kwargs", {}), "max_pixels": self.max_pixels}
-        proc_out = self.processor(text=prompt_text, **kwargs)
+        # 2. Collect image file paths from messages, open as PIL Images.
+        paths = _collect_image_paths(messages)
+        pil_images = [Image.open(p) for p in paths]
+        # 3. Call processor with string text + PIL images (verified working in
+        #    isolation with transformers 5.6.0). No _process_vision_info needed.
+        proc_out = self.processor(text=prompt_text, images=pil_images)
 
         input_ids = list(proc_out["input_ids"][0])
         multimodal_train_inputs = {
             k: v for k, v in proc_out.items() if k not in ("input_ids", "attention_mask")
         } or None
-        images = mm.get("images") or []
-        return prompt_text, input_ids, multimodal_train_inputs, images
+        return prompt_text, input_ids, multimodal_train_inputs, pil_images
 
     def _encode_text(self, messages: list[dict]):
         prompt_text = self.tokenizer.apply_chat_template(

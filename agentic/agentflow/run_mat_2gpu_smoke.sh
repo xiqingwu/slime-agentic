@@ -1,12 +1,12 @@
 #!/bin/bash
-# AgentFlow minimal demo: 1 GPU Qwen2.5-0.5B GRPO on dapo-math-17k
+# MAT visual AgentFlow smoke test — 2×4090 (GPU0=SGLang, GPU1=Megatron)
 #
 # Prerequisites:
-#   1. slime env built (build_conda.sh complete) with slime/ moved to slime_bak/
-#   2. Qwen2.5-0.5B-Instruct at /root/models/Qwen2.5-0.5B-Instruct
-#   3. dapo-math-17k at /root/datasets/dapo-math-17k
+#   1. Qwen3-VL-4B-Instruct at /data/models/qwen3_vl_4b
+#   2. MAT dataset at /data/MAT/mat_coding_agentflow.jsonl
+#   3. 2 GPUs available
 #
-# Usage: bash run_agentflow_1gpu.sh
+# Usage: MAT_MAX_PIXELS=200704 bash run_mat_2gpu_smoke.sh
 
 set -ex
 
@@ -21,43 +21,41 @@ if [ "${SKIP_PROCESS_KILL}" != "1" ]; then
 fi
 
 export PYTHONUNBUFFERED=1
+export MAT_MAX_PIXELS="${MAT_MAX_PIXELS:-200704}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# ── Model config (Qwen2.5-0.5B) ───────────────────────────────────────────────
-source "${ROOT_DIR}/scripts/models/qwen2.5-0.5B.sh"
+# ── Model config (Qwen3-VL-4B) ─────────────────────────────────────────────
+source "${ROOT_DIR}/scripts/models/qwen3-vl-4B.sh"
 
-MODEL_PATH="/root/models/Qwen2.5-0.5B-Instruct"
+MODEL_PATH="/data/models/qwen3_vl_4b"
 
-# ── Reduce TMS margin for tight single-GPU memory ─────────────────────────────
-TMS_ARGS=(
-   --train-memory-margin-bytes 0
-)
+TMS_ARGS=(--train-memory-margin-bytes 0)
 
-# Conservative params for 0.5B model on 24GB VRAM
 CKPT_ARGS=(
    --hf-checkpoint "${MODEL_PATH}"
    --ref-load "${MODEL_PATH}"
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
-   --input-key prompt
-   --label-key label
+   --prompt-data /data/MAT/mat_smoke_subset.jsonl
+   --input-key problem
+   --label-key gt
+   --apply-chat-template
    --rollout-shuffle
    --reward-key score
    --num-epoch 1
    --num-rollout 2
-   --rollout-batch-size 1
-   --n-samples-per-prompt 1
+   --rollout-batch-size 2
+   --n-samples-per-prompt 2
    --rollout-max-response-len 2048
    --rollout-temperature 0.7
-   --global-batch-size 1
+   --global-batch-size 2
    --balance-data
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 1
+   --tensor-model-parallel-size 2
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
@@ -85,14 +83,16 @@ OPTIMIZER_ARGS=(
    --adam-beta2 0.98
 )
 
-# Single GPU: minimal SGLang memory usage
+# GPU0 dedicated to SGLang — can use most of the 24GB
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
-   --sglang-mem-fraction-static 0.25
-   --sglang-disable-cuda-graph
-   --sglang-context-length 8192
+   --rollout-num-gpus 1
+   --colocate
+   --sglang-mem-fraction-static 0.7
+   --sglang-context-length 16384
 )
 
+# NOT colocated — SGLang on one GPU, Megatron on the other
 MISC_ARGS=(
    --attention-dropout 0.0
    --hidden-dropout 0.0
@@ -100,32 +100,37 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    --attention-backend flash
    --actor-num-nodes 1
-   --actor-num-gpus-per-node 1
-   --colocate
+   --actor-num-gpus-per-node 2
+   --optimizer-cpu-offload
+   --use-precision-aware-optimizer
+   --recompute-granularity full
+   --recompute-method uniform
+   --recompute-num-layers 1
    --megatron-to-hf-mode bridge
    --ci-test
 )
 
+# MAT custom hooks
 CUSTOM_ARGS=(
-   --custom-generate-function-path rollout_1gpu.generate
-   --custom-rm-path rollout_1gpu.reward_func
-   --custom-eval-rollout-log-function-path rollout_1gpu.eval_log
+   --custom-generate-function-path rollout_mat.generate
+   --custom-rm-path core.mat_rewards.mat_reward_func
+   --custom-rollout-log-function-path rollout_mat.log_rollout
+   --custom-eval-rollout-log-function-path rollout_mat.eval_log
    --custom-convert-samples-to-train-data-path custom_convert.custom_convert
 )
 
-# ── Launch ────────────────────────────────────────────────────────────────────
+# ── Launch ─────────────────────────────────────────────────────────────────
 
-# Unset proxies to avoid Ray connection issues
 for v in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; do unset $v 2>/dev/null; done
-
-export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 1 --disable-usage-stats
+export MASTER_ADDR="127.0.0.1"
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 2 --disable-usage-stats
 
 RUNTIME_ENV_JSON='{
   "env_vars": {
     "PYTHONPATH": "/root/autodl-tmp/Megatron-LM/:'"${SCRIPT_DIR}"'",
     "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-    "NCCL_NVLS_ENABLE": "0"
+    "NCCL_NVLS_ENABLE": "0",
+    "MAT_MAX_PIXELS": "'"${MAT_MAX_PIXELS}"'"
   }
 }'
 
