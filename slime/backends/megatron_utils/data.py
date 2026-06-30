@@ -154,6 +154,14 @@ def get_batch(
         for mm_input_dict in multimodal_train_inputs:
             if mm_input_dict is not None:
                 for key, mm_tensor in mm_input_dict.items():
+                    # mm_token_type_ids (1, seq_len) vary per-sequence when
+                    # custom_convert splits multi-turn trajectories into
+                    # independent training samples with different prompt
+                    # lengths.  Squeeze the artificial batch dim so the
+                    # 1-D per-sequence arrays concatenate correctly; the
+                    # model expects a flat [total_tokens] tensor.
+                    if key == "mm_token_type_ids" and getattr(mm_tensor, "ndim", 0) == 2 and mm_tensor.shape[0] == 1:
+                        mm_tensor = mm_tensor.squeeze(0)
                     if key not in multimodal_data:
                         multimodal_data[key] = mm_tensor
                     else:

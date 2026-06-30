@@ -88,7 +88,7 @@ SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
    --rollout-num-gpus 1
    --colocate
-   --sglang-mem-fraction-static 0.7
+   --sglang-mem-fraction-static 0.45
    --sglang-context-length 16384
 )
 
@@ -107,7 +107,7 @@ MISC_ARGS=(
    --recompute-method uniform
    --recompute-num-layers 1
    --megatron-to-hf-mode bridge
-   --ci-test
+   
 )
 
 # MAT custom hooks
