@@ -212,7 +212,12 @@ class SGLangEngine:
         if self.processor is not None and messages_have_images(messages):
             prompt_text, prompt_token_ids, multimodal_train_inputs, images = self._encode_multimodal(messages)
             image_data = [_encode_image(img) for img in images] if images else None
-            payload = build_generate_payload(params, input_ids=prompt_token_ids, image_data=image_data)
+            # Keep the locally processed IDs/tensors for training, but let SGLang
+            # expand the image placeholders exactly once on its side. Sending
+            # already-expanded VLM input_ids together with image_data makes the
+            # server process the same image a second time and can desynchronize
+            # its image_grid_thw indexing (slime v0.3.0 follows this text path).
+            payload = build_generate_payload(params, text=prompt_text, image_data=image_data)
         else:
             prompt_text, prompt_token_ids = self._encode_text(messages)
             payload = build_generate_payload(params, text=prompt_text)

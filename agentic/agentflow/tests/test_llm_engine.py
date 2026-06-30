@@ -185,10 +185,11 @@ def test_generate_multimodal_path():
         eng._post, eng._process_vision_info, eng._encode_image = saved
 
     payload = captured["payload"]
-    # multimodal path sends input_ids (from processor) + base64 image_data, NOT text
-    assert payload["input_ids"] == [10, 11, 12, 13]
+    # SGLang receives text so it expands image placeholders once; the locally
+    # processed IDs are retained separately for training-side alignment.
+    assert payload["text"] == "MM_PROMPT"
     assert payload["image_data"] == ["data:enc:PIL_OBJ"]
-    assert "text" not in payload
+    assert "input_ids" not in payload
     # GenerationOutput carries processor tensors for training-side alignment
     assert out.prompt_token_ids == [10, 11, 12, 13]
     assert out.multimodal_train_inputs == {"pixel_values": "PV", "image_grid_thw": "THW"}
