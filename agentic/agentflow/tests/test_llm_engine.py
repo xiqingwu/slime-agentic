@@ -44,13 +44,39 @@ class FakeProcessor:
     def __init__(self):
         self.chat_template_kwargs = None
 
-    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True, **kwargs):
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True,
+                            return_dict=False, return_tensors=None, **kwargs):
         self.chat_template_kwargs = kwargs   # capture enable_thinking etc.
+        self.template_messages = messages
+        if tokenize:
+            assert return_dict is True
+            assert return_tensors == "pt"
+            return FakeBatch({
+                "input_ids": FakeTensor([[10, 11, 12, 13]]),
+                "attention_mask": FakeTensor([[1, 1, 1, 1]]),
+                "pixel_values": "PV",
+                "image_grid_thw": "THW",
+            })
         return "MM_PROMPT"
 
     def __call__(self, text=None, **kwargs):
         # mimic HF processor output: input_ids (batched) + modality tensors
         return {"input_ids": [[10, 11, 12, 13]], "pixel_values": "PV", "image_grid_thw": "THW"}
+
+
+class FakeRow(list):
+    def tolist(self):
+        return list(self)
+
+
+class FakeTensor(list):
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        return FakeRow(value) if isinstance(value, list) else value
+
+
+class FakeBatch(dict):
+    pass
 
 
 def _text_msgs():
@@ -145,10 +171,9 @@ def test_generate_multimodal_path():
         captured["payload"] = payload
         return CANNED_OUT
 
-    saved = (eng._post, eng._process_vision_info, eng._build_processor_kwargs, eng._encode_image)
+    saved = (eng._post, eng._process_vision_info, eng._encode_image)
     eng._post = fake_post
     eng._process_vision_info = lambda messages, processor: {"images": ["PIL_OBJ"], "videos": []}
-    eng._build_processor_kwargs = lambda mm: {}
     eng._encode_image = lambda image: f"data:enc:{image}"
     proc = FakeProcessor()
     try:
@@ -157,13 +182,14 @@ def test_generate_multimodal_path():
                               enable_thinking=False)
         out = asyncio.run(engine.generate(_image_msgs()))
     finally:
-        eng._post, eng._process_vision_info, eng._build_processor_kwargs, eng._encode_image = saved
+        eng._post, eng._process_vision_info, eng._encode_image = saved
 
     payload = captured["payload"]
-    # multimodal path sends input_ids (from processor) + base64 image_data, NOT text
-    assert payload["input_ids"] == [10, 11, 12, 13]
+    # SGLang receives text so it expands image placeholders once; the locally
+    # processed IDs are retained separately for training-side alignment.
+    assert payload["text"] == "MM_PROMPT"
     assert payload["image_data"] == ["data:enc:PIL_OBJ"]
-    assert "text" not in payload
+    assert "input_ids" not in payload
     # GenerationOutput carries processor tensors for training-side alignment
     assert out.prompt_token_ids == [10, 11, 12, 13]
     assert out.multimodal_train_inputs == {"pixel_values": "PV", "image_grid_thw": "THW"}
@@ -173,17 +199,11 @@ def test_generate_multimodal_path():
 
 def test_generate_multimodal_max_pixels_injected():
     """max_pixels is forwarded into images_kwargs when set on the engine."""
-    captured_kwargs = {}
+    proc = FakeProcessor()
 
-    class CapturingProcessor(FakeProcessor):
-        def __call__(self, text=None, **kwargs):
-            captured_kwargs.update(kwargs)
-            return {"input_ids": [[10, 11, 12]], "pixel_values": "PV", "image_grid_thw": "THW"}
-
-    saved = (eng._post, eng._process_vision_info, eng._build_processor_kwargs, eng._encode_image)
+    saved = (eng._post, eng._process_vision_info, eng._encode_image)
     eng._post = lambda url, payload, headers=None: asyncio.coroutine(lambda: CANNED_OUT)()
     eng._process_vision_info = lambda messages, processor: {"images": ["PIL_OBJ"], "videos": []}
-    eng._build_processor_kwargs = lambda mm: {"images_kwargs": {"return_tensors": "pt"}}
     eng._encode_image = lambda image: "data:enc"
 
     async def fake_post(url, payload, headers=None):
@@ -192,12 +212,14 @@ def test_generate_multimodal_max_pixels_injected():
     eng._post = fake_post
     try:
         engine = SGLangEngine(url="http://x/generate", tokenizer=FakeTokenizer(),
-                              sampling_params={}, processor=CapturingProcessor(), max_pixels=401408)
+                              sampling_params={}, processor=proc, max_pixels=401408)
         asyncio.run(engine.generate(_image_msgs()))
     finally:
-        eng._post, eng._process_vision_info, eng._build_processor_kwargs, eng._encode_image = saved
+        eng._post, eng._process_vision_info, eng._encode_image = saved
 
-    assert captured_kwargs.get("images_kwargs", {}).get("max_pixels") == 401408
+    image_block = proc.template_messages[0]["content"][0]
+    assert image_block["max_pixels"] == 401408
+    assert "max_pixels" not in _image_msgs()[0]["content"][0]
 
 
 def test_generate_processor_but_no_images_uses_text_path():
