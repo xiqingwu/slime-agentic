@@ -1,0 +1,4 @@
+# Install the local ms-swift repository itself with: pip install -e /path/to/ms-swift
+opencv-python-headless>=4.8
+Pillow>=10
+pytest>=8
