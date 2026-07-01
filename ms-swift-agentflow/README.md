@@ -3,6 +3,10 @@
 Independent migration of the MAT visual AgentFlow pipeline to ms-swift. The old
 slime implementation is not imported at runtime.
 
+For server deployment, validation gates, runtime data flow, reward details,
+and known limitations, read [SERVER_CODEX_GUIDE.md](SERVER_CODEX_GUIDE.md)
+first.
+
 ## Architecture
 
 ```text
